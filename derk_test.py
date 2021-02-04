@@ -64,14 +64,6 @@ class nn_agent(nn.Module):
                 actions.append(torch.multinomial(action_probs, num_samples = 1).item())
             else:
                 actions.append(torch.normal(logits[i][0], logits[i][1]).cpu().detach().numpy())
-        '''
-        for i in range(len(logits)):
-            if self.action_discrete[i]:
-                action_probs = nn.functional.log_softmax(logits[i], dim=1).exp()
-                actions.append(torch.multinomial(action_probs, num_samples = 1)[:,0].cpu().detach().numpy())
-            else:
-                actions.append(torch.normal(logits[i][:,0], logits[i][:,1]).cpu().detach().numpy())
-        '''
         return actions
 
     def get_log_prob(self, network_outputs, actions_taken):
