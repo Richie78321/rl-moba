@@ -31,7 +31,7 @@ reward_function = {
 }
 
 class nn_agent(nn.Module):
-    def __init__(self, hidden_size, device, activation = nn.Tanh()):
+    def __init__(self, hidden_size, device, activation = nn.ReLU()):
         super().__init__()
         self.device = device
 
@@ -40,46 +40,51 @@ class nn_agent(nn.Module):
                                              nn.Linear(hidden_size, hidden_size),
                                              activation)
 
-        self.action_discrete = [False, False, False, True, True]
+        self.continuous_size = 3
+        self.logstd = nn.Parameter(torch.zeros(self.continuous_size))
+        self.continuous_action_head = nn.Linear(hidden_size, self.continuous_size)
 
-        self.action_heads = nn.ModuleList([nn.Sequential(nn.Linear(hidden_size, 2), nn.Tanh()),
-                                           nn.Sequential(nn.Linear(hidden_size, 2), nn.Tanh()),
-                                           nn.Sequential(nn.Linear(hidden_size, 2), nn.Sigmoid()),
-                                           nn.Linear(hidden_size, 4),
-                                           nn.Linear(hidden_size, 8)])
+        self.discrete_action_heads = nn.ModuleList([nn.Linear(hidden_size, 4),
+                                                    nn.Linear(hidden_size, 8)])
 
-        self.optimizer = torch.optim.Adam(self.parameters(), lr = 1e-3)
+        self.optimizer = torch.optim.Adam(self.parameters(), lr = 5e-3)
         self.to(self.device)
 
     def forward(self, obs):
         features = self.state_processor(obs)
-        return [action_head(features) for action_head in self.action_heads]
+        continuous_actions = self.continuous_action_head(features)
+
+        #bound action 0 and 1 between -1 and 1, bound action 2 between 0 and 1
+        continuous_actions[:,0:2] = torch.tanh(continuous_actions[:,0:2])
+        continuous_actions[:,2] = torch.sigmoid(continuous_actions[:,2])
+
+        discrete_actions = [action_head(features) for action_head in self.discrete_action_heads]
+        return continuous_actions, discrete_actions
 
     def get_action(self, obs):
-        logits = self(obs)
-        actions = []
-        for i in range(len(logits)):
-            if self.action_discrete[i]:
-                action_probs = nn.functional.log_softmax(logits[i], dim=0).exp()
-                actions.append(torch.multinomial(action_probs, num_samples = 1).item())
-            else:
-                actions.append(torch.normal(logits[i][0], logits[i][1]).cpu().detach().numpy())
+        continuous_means, discrete_output = self(obs)
+        actions =  torch.normal(continuous_means, self.logstd.exp()).cpu().detach().numpy()
+
+        for discrete_logits in discrete_output:
+            discrete_probs = nn.functional.log_softmax(discrete_logits, dim=1).exp()
+            discrete_actions = torch.multinomial(discrete_probs, num_samples = 1).flatten().cpu().detach().numpy()
+            actions = np.concatenate((actions, discrete_actions.reshape(-1,1)), axis = 1)
+
         return actions
 
-    def get_log_prob(self, network_outputs, actions_taken):
-        actions_taken = torch.Tensor(actions_taken).to(self.device)
-        total_log_prob = 0
-        for i in range(len(network_outputs)):
-            if self.action_discrete[i]:
-                action_probs = nn.functional.log_softmax(network_outputs[i], dim=1).exp()
-                total_log_prob += torch.distributions.Categorical(action_probs).log_prob(actions_taken[:,i]).sum()
-            else:
-                total_log_prob += torch.distributions.Normal(network_outputs[i][:,0], network_outputs[i][:,1]).log_prob(actions_taken[:,i]).sum()
+    def get_log_prob(self, obs, actions_taken):
+        continuous_means, discrete_output = self(torch.Tensor(obs).to(self.device))
+
+        total_log_prob = torch.distributions.Normal(continuous_means, self.logstd.exp()).log_prob(actions_taken[:,0:self.continuous_size]).sum()
+
+        for i in range(len(discrete_output)):
+            discrete_probs = nn.functional.log_softmax(discrete_output[i], dim=1).exp()
+            total_log_prob += torch.distributions.Categorical(discrete_probs).log_prob(actions_taken[:,self.continuous_size+i]).sum()
+
         return total_log_prob
 
     def update(self, obs, act, adv):
-        network_outputs = self(torch.Tensor(obs).to(self.device))
-        logprob_pi = self.get_log_prob(network_outputs, act)
+        logprob_pi = self.get_log_prob(obs, torch.Tensor(act).to(self.device))
 
         self.optimizer.zero_grad()
         loss = torch.sum((-logprob_pi * torch.Tensor(adv).to(self.device)))
@@ -90,10 +95,11 @@ device = "cuda:0"
 ITERATIONS = 1000000
 discount = 0.99
 agent = nn_agent(1024, device)
-env = DerkEnv(n_arenas = 20, turbo_mode = True, reward_function = reward_function)
+random_agent = nn_agent(1024, device)
+env = DerkEnv(n_arenas = 200, turbo_mode = True, reward_function = reward_function)
 
-for i in range(ITERATIONS):
-    print("-----------------------------ITERATION " + str(i) + "-----------------------------")
+for iteration in range(ITERATIONS):
+    print("\n-----------------------------ITERATION " + str(iteration) + "-----------------------------")
     observation = []
     done = []
     action = []
@@ -101,8 +107,7 @@ for i in range(ITERATIONS):
 
     observation_n = env.reset()
     while True:
-        #get actions from the agents for all of the paralell games (and agents)
-        action_n = [agent.get_action(torch.Tensor(observation_n[i]).to(device)) for i in range(env.n_agents)]
+        action_n = agent.get_action(torch.Tensor(observation_n).to(device))
         #act in environment and observe the new obervation and reward (done tells you if episode is over)
         observation_n, reward_n, done_n, _ = env.step(action_n)
 
@@ -113,7 +118,6 @@ for i in range(ITERATIONS):
         action.append(action_n)
 
         if all(done_n):
-          print("Episode finished")
           break
 
     # reshapes all collected data to [episode num, timestep]
@@ -121,8 +125,6 @@ for i in range(ITERATIONS):
     reward = np.swapaxes(np.array(reward), 0, 1)
     done = np.swapaxes(np.array(done), 0, 1)
     action = np.swapaxes(np.array(action), 0, 1)
-
-    print("average reward: " + str(reward.mean()))
 
     #calculate discounted returns
     discounted_returns = np.zeros(reward.size)
@@ -134,7 +136,7 @@ for i in range(ITERATIONS):
             cumulative_reward *= discount
 
     #normalize discounted returns
-    norm_discounted_returns = (discounted_returns - discounted_returns.mean()) / discounted_returns.std()
+    norm_discounted_returns = (discounted_returns - discounted_returns.mean()) / (discounted_returns.std() + 1e-8)
 
     #reshape the observation and action data into one big batch
     observation = observation.reshape(-1, observation.shape[2])
@@ -143,5 +145,28 @@ for i in range(ITERATIONS):
     #learn from experience
     agent.update(observation, action, norm_discounted_returns)
 
+    if iteration % 2 == 0:
+        print("\nEvaluating against random agent")
+        observation_n = env.reset()
+        while True:
+            #get actions for agent (first half of observations) and random agent (second half of observations)
+            agent_action_n = agent.get_action(torch.Tensor(observation_n[:env.n_agents//2]).to(device)).tolist()
+            random_action_n = random_agent.get_action(torch.Tensor(observation_n[:env.n_agents//2]).to(device)).tolist()
+            action_n = agent_action_n + random_action_n
+
+            #act in environment and observe the new obervation and reward (done tells you if episode is over)
+            observation_n, reward_n, done_n, _ = env.step(action_n)
+
+            if all(done_n):
+              total_home_reward = 0
+              total_away_reward = 0
+              for i in range(len(env.team_stats)//2):
+                total_home_reward += env.team_stats[i][0]
+                total_away_reward += env.team_stats[i][1]
+              total_home_reward /= (len(env.team_stats)//2)
+              total_away_reward /= (len(env.team_stats)//2)
+
+              print("Agent avg reward:", total_home_reward, " Random avg reward:", total_away_reward)
+              break
 
 env.close()
