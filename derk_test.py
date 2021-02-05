@@ -47,7 +47,7 @@ class nn_agent(nn.Module):
         self.discrete_action_heads = nn.ModuleList([nn.Linear(hidden_size, 4),
                                                     nn.Linear(hidden_size, 8)])
 
-        self.optimizer = torch.optim.Adam(self.parameters(), lr = 5e-3)
+        self.optimizer = torch.optim.Adam(self.parameters(), lr = 2e-3)
         self.to(self.device)
 
     def forward(self, obs):
