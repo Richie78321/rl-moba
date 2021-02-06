@@ -75,11 +75,11 @@ class nn_agent(nn.Module):
     def get_log_prob(self, obs, actions_taken):
         continuous_means, discrete_output = self(torch.Tensor(obs).to(self.device))
 
-        total_log_prob = torch.distributions.Normal(continuous_means, self.logstd.exp()).log_prob(actions_taken[:,0:self.continuous_size]).sum()
+        total_log_prob = torch.distributions.Normal(continuous_means, self.logstd.exp()).log_prob(actions_taken[:,0:self.continuous_size]).sum(axis=1)
 
         for i in range(len(discrete_output)):
             discrete_probs = nn.functional.log_softmax(discrete_output[i], dim=1).exp()
-            total_log_prob += torch.distributions.Categorical(discrete_probs).log_prob(actions_taken[:,self.continuous_size+i]).sum()
+            total_log_prob += torch.distributions.Categorical(discrete_probs).log_prob(actions_taken[:,self.continuous_size+i])
 
         return total_log_prob
 
