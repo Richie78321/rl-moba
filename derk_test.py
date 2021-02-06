@@ -85,7 +85,6 @@ class nn_agent(nn.Module):
         return total_log_prob
 
     def update(self, obs, act, adv):
-        print("-------------------------------------------------------------------", self.logstd.exp().cpu().detach().numpy().tolist())
         logprob_pi = self.get_log_prob(obs, torch.Tensor(act).to(self.device))
 
         self.optimizer.zero_grad()
