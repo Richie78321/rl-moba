@@ -3,6 +3,7 @@ import time
 import torch
 from torch import nn
 import numpy as np
+import copy
 
 #custom reward function
 reward_function = {
@@ -84,6 +85,7 @@ class nn_agent(nn.Module):
         return total_log_prob
 
     def update(self, obs, act, adv):
+        print("-------------------------------------------------------------------", self.logstd.exp().cpu().detach().numpy().tolist())
         logprob_pi = self.get_log_prob(obs, torch.Tensor(act).to(self.device))
 
         self.optimizer.zero_grad()
@@ -94,12 +96,19 @@ class nn_agent(nn.Module):
 device = "cuda:0"
 ITERATIONS = 1000000
 discount = 0.99
-agent = nn_agent(1024, device)
-random_agent = nn_agent(1024, device)
-env = DerkEnv(n_arenas = 200, turbo_mode = True, reward_function = reward_function)
+agent = nn_agent(512, device)
+env = DerkEnv(n_arenas = 400, turbo_mode = True, reward_function = reward_function)
+
+save_model_every = 10
+play_against_gap = 30
+past_models = []
 
 for iteration in range(ITERATIONS):
     print("\n-----------------------------ITERATION " + str(iteration) + "-----------------------------")
+
+    if iteration % save_model_every == 0:
+        past_models.append(copy.deepcopy(agent))
+
     observation = []
     done = []
     action = []
@@ -146,12 +155,14 @@ for iteration in range(ITERATIONS):
     agent.update(observation, action, norm_discounted_returns)
 
     if iteration % 2 == 0:
-        print("\nEvaluating against random agent")
+        testing_against = max(0, (iteration - play_against_gap) // save_model_every)
+        print("\nEvaluating against iteration ", testing_against * save_model_every)
+
         observation_n = env.reset()
         while True:
             #get actions for agent (first half of observations) and random agent (second half of observations)
             agent_action_n = agent.get_action(torch.Tensor(observation_n[:env.n_agents//2]).to(device)).tolist()
-            random_action_n = random_agent.get_action(torch.Tensor(observation_n[:env.n_agents//2]).to(device)).tolist()
+            random_action_n = past_models[testing_against].get_action(torch.Tensor(observation_n[:env.n_agents//2]).to(device)).tolist()
             action_n = agent_action_n + random_action_n
 
             #act in environment and observe the new obervation and reward (done tells you if episode is over)
@@ -166,7 +177,7 @@ for iteration in range(ITERATIONS):
               total_home_reward /= (len(env.team_stats)//2)
               total_away_reward /= (len(env.team_stats)//2)
 
-              print("Agent avg reward:", total_home_reward, " Random avg reward:", total_away_reward)
+              print("Agent avg reward:", total_home_reward, " Iteration", testing_against * save_model_every ,"reward:", total_away_reward)
               break
 
 env.close()
