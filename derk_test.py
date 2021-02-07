@@ -48,7 +48,7 @@ class nn_agent(nn.Module):
         self.discrete_action_heads = nn.ModuleList([nn.Linear(hidden_size, 4),
                                                     nn.Linear(hidden_size, 8)])
 
-        self.optimizer = torch.optim.Adam(self.parameters(), lr = 2e-3)
+        self.optimizer = torch.optim.Adam(self.parameters(), lr = 5e-5)
         self.to(self.device)
 
     def forward(self, obs):
@@ -161,7 +161,7 @@ for iteration in range(ITERATIONS):
         while True:
             #get actions for agent (first half of observations) and random agent (second half of observations)
             agent_action_n = agent.get_action(torch.Tensor(observation_n[:env.n_agents//2]).to(device)).tolist()
-            random_action_n = past_models[testing_against].get_action(torch.Tensor(observation_n[:env.n_agents//2]).to(device)).tolist()
+            random_action_n = past_models[testing_against].get_action(torch.Tensor(observation_n[env.n_agents//2:]).to(device)).tolist()
             action_n = agent_action_n + random_action_n
 
             #act in environment and observe the new obervation and reward (done tells you if episode is over)
