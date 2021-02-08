@@ -121,7 +121,7 @@ class nn_agent(nn.Module):
 device = "cuda:0"
 ITERATIONS = 1000000
 discount = 0.99
-agent = nn_agent(256, device)
+agent = nn_agent(512, device)
 env = DerkEnv(n_arenas = 1000, turbo_mode = True, reward_function = reward_function)
 
 save_model_every = 10
