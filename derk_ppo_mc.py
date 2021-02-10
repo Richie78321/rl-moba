@@ -6,31 +6,63 @@ import numpy as np
 import copy
 from tqdm import tqdm
 
+
 #custom reward function
-reward_function = {
-    "damageEnemyStatue": 4,
-    "damageEnemyUnit": 2,
-    "killEnemyStatue": 4,
+shaped_reward_function = {
+    "damageEnemyStatue": 2,
+    "damageEnemyUnit": 1,
+    "killEnemyStatue": 25,
     "killEnemyUnit": 2,
     "healFriendlyStatue": 2,
     "healTeammate1": 1,
     "healTeammate2": 1,
     "timeSpentHomeBase": 0,
     "timeSpentHomeTerritory": 0,
-    "timeSpentAwayTerritory": 0,
-    "timeSpentAwayBase": 0,
+    "timeSpentAwayTerritory": -30,
+    "timeSpentAwayBase": -30,
     "damageTaken": -1,
     "friendlyFire": -1,
     "healEnemy": -1,
     "fallDamageTaken": -10,
     "statueDamageTaken": -4,
     "manualBonus": 0,
-    "victory": 100,
-    "loss": -100,
+    "victory": 200,
+    "loss": -200,
     "tie": 0,
-    "teamSpirit": 0.2,
+    "teamSpirit": 0.3,
     "timeScaling": 1.0,
 }
+win_loss_reward_function = {
+    "damageEnemyStatue": 0,
+    "damageEnemyUnit": 0,
+    "killEnemyStatue": 0,
+    "killEnemyUnit": 0,
+    "healFriendlyStatue": 0.,
+    "healTeammate1": 0,
+    "healTeammate2": 0,
+    "timeSpentHomeBase": 0,
+    "timeSpentHomeTerritory": 0,
+    "timeSpentAwayTerritory": 0,
+    "timeSpentAwayBase": 0,
+    "damageTaken": 0,
+    "friendlyFire": 0,
+    "healEnemy": 0,
+    "fallDamageTaken": 0,
+    "statueDamageTaken": 0,
+    "manualBonus": 0,
+    "victory": 0.3333333333333,
+    "loss": 0,
+    "tie": 0.16666666666666,
+    "teamSpirit": 1.0,
+    "timeScaling": 1.0,
+}
+
+classes_team_config = [
+      { 'primaryColor': '#ff00ff', 'slots': ['Talons', 'FrogLegs', 'ParalyzingDart'] },
+      { 'primaryColor': '#00ff00', 'slots': ['Magnum', 'Trombone', 'VampireGland'] },
+      { 'primaryColor': '#ff0000', 'slots': ['Cripplers', 'IronBubblegum', 'HealingGland'] }
+   ]
+
 
 class nn_agent(nn.Module):
     def __init__(self, hidden_size, device, activation = nn.ReLU()):
@@ -39,6 +71,7 @@ class nn_agent(nn.Module):
         self.sgd_iterations = 1
         self.mini_batch_size = 1000
         self.eps_clip = 0.1
+        self.entropy_coeff = 0.0005 #prevents policy collapse by keeping some randomness for exploration
 
         self.device = device
 
@@ -79,27 +112,36 @@ class nn_agent(nn.Module):
 
         return actions
 
-    def get_log_prob(self, obs, actions_taken):
+    def get_action_info(self, obs, actions_taken):
         continuous_means, discrete_output = self(torch.Tensor(obs).to(self.device))
 
-        log_probs = torch.distributions.Normal(continuous_means, self.logstd.exp()).log_prob(actions_taken[:,:self.continuous_size])
+        normal_dists = torch.distributions.Normal(continuous_means, self.logstd.exp())
+
+        log_probs = normal_dists.log_prob(actions_taken[:,:self.continuous_size])
+        entropy = normal_dists.entropy()
 
         for i in range(len(discrete_output)):
             discrete_probs = nn.functional.log_softmax(discrete_output[i], dim=1).exp()
-            discrete_log_probs = torch.distributions.Categorical(discrete_probs).log_prob(actions_taken[:,self.continuous_size+i])
-            log_probs = torch.cat((log_probs, discrete_log_probs.unsqueeze(1)), axis=1)
+            discrete_dist = torch.distributions.Categorical(discrete_probs)
+            discrete_log_probs = discrete_dist.log_prob(actions_taken[:,self.continuous_size+i])
 
-        return log_probs
+            log_probs = torch.cat((log_probs, discrete_log_probs.unsqueeze(1)), axis=1)
+            entropy = torch.cat((entropy, discrete_dist.entropy().unsqueeze(1)), axis=1)
+
+        return log_probs, entropy
 
     def update(self, obs, act, adv):
-        original_log_prob_pi = self.get_log_prob(obs, torch.Tensor(act).to(self.device)).detach()
+        original_log_prob_pi, entropy = self.get_action_info(obs, torch.Tensor(act).to(self.device))
+
+        print("Policy Entropy: ", entropy.mean(axis=0).detach().cpu().numpy().tolist())
+        print("\nTraining with PPO")
 
         for training_iteration in range(self.sgd_iterations):
             shuffled = torch.randperm(obs.shape[0])
             obs = obs[shuffled]
             act = act[shuffled]
             adv = adv[shuffled]
-            original_log_prob_pi = original_log_prob_pi[shuffled]
+            original_log_prob_pi = original_log_prob_pi[shuffled].detach()
 
             for minibatch_num in tqdm(range((obs.shape[0]//self.mini_batch_size) - 1)):
                 minibatch_obs = obs[minibatch_num*self.mini_batch_size:(minibatch_num+1)*self.mini_batch_size]
@@ -107,26 +149,29 @@ class nn_agent(nn.Module):
                 minibatch_adv = torch.Tensor(adv[minibatch_num*self.mini_batch_size:(minibatch_num+1)*self.mini_batch_size]).to(self.device)
                 minibatch_olpp = original_log_prob_pi[minibatch_num*self.mini_batch_size:(minibatch_num+1)*self.mini_batch_size]
 
-                curr_logprob_pi = self.get_log_prob(minibatch_obs, minibatch_act)
+                curr_logprob_pi, entropy = self.get_action_info(minibatch_obs, minibatch_act)
                 ratio = torch.exp(curr_logprob_pi - minibatch_olpp)
 
                 surrogate_loss1 = ratio.sum(axis=1) * minibatch_adv
                 surrogate_loss2 = torch.clamp(ratio, 1-self.eps_clip, 1+self.eps_clip).sum(axis=1) * minibatch_adv
-                loss = -torch.min(surrogate_loss1, surrogate_loss2)
+                loss = -torch.min(surrogate_loss1, surrogate_loss2) - self.entropy_coeff * entropy.sum(axis=1)
 
                 self.optimizer.zero_grad()
-                loss.sum().backward()
+                loss.mean().backward()
                 self.optimizer.step()
 
 device = "cuda:0"
 ITERATIONS = 1000000
-discount = 0.99
+discount = 1
 agent = nn_agent(512, device)
-env = DerkEnv(n_arenas = 1000, turbo_mode = True, reward_function = reward_function)
+env = DerkEnv(n_arenas = 800, turbo_mode = True, reward_function = win_loss_reward_function)#, home_team = classes_team_config, away_team = classes_team_config)
 
+past_selves_ratio = 0.2
 save_model_every = 10
-play_against_gap = 40
+eval_against_gap = 40
 past_models = []
+
+portion_controlled_by_curr = 1 - (past_selves_ratio/2)
 
 for iteration in range(ITERATIONS):
     print("\n-----------------------------ITERATION " + str(iteration) + "-----------------------------")
@@ -139,17 +184,31 @@ for iteration in range(ITERATIONS):
     action = []
     reward = []
 
+    #picks past agents spaced further apart based on how far into training you are
+    past_selve_indices = [(int(iteration - (i * (iteration ** 0.7))) // save_model_every) for i in range(4)]
+
     observation_n = env.reset()
     while True:
-        action_n = agent.get_action(torch.Tensor(observation_n).to(device))
+        action_n = agent.get_action(torch.Tensor(observation_n[:int(env.n_agents*portion_controlled_by_curr)]).to(device))
+
+        #quick and dirty way to query actions from past agents in a 0.5:0.25:0.25 ratio
+        #should be changed to be more general/ less terrible later
+        past_agent_1_action = past_models[past_selve_indices[0]].get_action(torch.Tensor \
+        (observation_n[int(env.n_agents*portion_controlled_by_curr):int(env.n_agents*(portion_controlled_by_curr+past_selves_ratio*0.5))]).to(device))
+        past_agent_2_action = past_models[past_selve_indices[1]].get_action(torch.Tensor \
+        (observation_n[int(env.n_agents*(portion_controlled_by_curr+past_selves_ratio*0.5)):int(env.n_agents*(portion_controlled_by_curr+past_selves_ratio*0.75))]).to(device))
+        past_agent_3_action = past_models[past_selve_indices[2]].get_action(torch.Tensor \
+        (observation_n[int(env.n_agents*(portion_controlled_by_curr+past_selves_ratio*0.75)):]).to(device))
+        action_n = np.concatenate((action_n, past_agent_1_action, past_agent_2_action, past_agent_3_action), axis = 0)
+
         #act in environment and observe the new obervation and reward (done tells you if episode is over)
         observation_n, reward_n, done_n, _ = env.step(action_n)
 
         #collect experience data to learn from
-        observation.append(observation_n)
-        reward.append(reward_n)
-        done.append(done_n)
-        action.append(action_n)
+        observation.append(observation_n[:int(env.n_agents*portion_controlled_by_curr)])
+        reward.append(reward_n[:int(env.n_agents*portion_controlled_by_curr)])
+        done.append(done_n[:int(env.n_agents*portion_controlled_by_curr)])
+        action.append(action_n[:int(env.n_agents*portion_controlled_by_curr)])
 
         if all(done_n):
           break
@@ -177,11 +236,10 @@ for iteration in range(ITERATIONS):
     action = action.reshape(-1, action.shape[2])
 
     #learn from experience
-    print("Training with PPO")
     agent.update(observation, action, norm_discounted_returns)
 
     if iteration % 2 == 0:
-        testing_against = max(0, (iteration - play_against_gap) // save_model_every)
+        testing_against = max(0, (iteration - eval_against_gap) // save_model_every)
         if iteration % 4 == 0:
             testing_against = 0
         print("\nEvaluating against iteration ", testing_against * save_model_every)
