@@ -20,16 +20,19 @@ for t in range(2):
     rangedObs=observation_n[1, :]
     tankObs=observation_n[2, :]
 
-    
+
     # Healer Actions
-    # If nobody is badly injured, attack
-    
+    # If nobody is badly injured or health is too low to heal, attack
+    # If somebody is injured, run to safety and heal them
 
 
 
     # Ranged Actions
+    # If an enemy is too close, back up
+    # Target enemies with healing first, then big damage items, then the closest enemy
 
     # Tank Actions
+    # Engage the ranged units while staying close to the healer
     
     if all(done_n):
       print("Episode finished")
