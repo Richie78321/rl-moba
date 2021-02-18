@@ -4,11 +4,12 @@ import torch
 from torch import nn
 import numpy as np
 import copy
+import os
 from tqdm import tqdm
 
 
 #custom reward function
-shaped_reward_function = {
+reward_function = {
     "damageEnemyStatue": 2,
     "damageEnemyUnit": 1,
     "killEnemyStatue": 25,
@@ -32,6 +33,33 @@ shaped_reward_function = {
     "teamSpirit": 0.3,
     "timeScaling": 1.0,
 }
+'''
+#custom reward function
+reward_function = {
+    "damageEnemyStatue": 1,
+    "damageEnemyUnit": 1,
+    "killEnemyStatue": 0,
+    "killEnemyUnit": 0,
+    "healFriendlyStatue": 1,
+    "healTeammate1": 1,
+    "healTeammate2": 1,
+    "timeSpentHomeBase": 0,
+    "timeSpentHomeTerritory": 0,
+    "timeSpentAwayTerritory": 0,
+    "timeSpentAwayBase": 0,
+    "damageTaken": -1,
+    "friendlyFire": -1,
+    "healEnemy": -1,
+    "fallDamageTaken": -1,
+    "statueDamageTaken": -1,
+    "manualBonus": 0,
+    "victory": 0,
+    "loss": 0,
+    "tie": 0,
+    "teamSpirit": 0.5,
+    "timeScaling": 1.0,
+}
+'''
 win_loss_reward_function = {
     "damageEnemyStatue": 0,
     "damageEnemyUnit": 0,
@@ -65,13 +93,13 @@ classes_team_config = [
 
 
 class nn_agent(nn.Module):
-    def __init__(self, hidden_size, device, activation = nn.ReLU()):
+    def __init__(self, hidden_size, device, activation = nn.Tanh()):
         super().__init__()
 
         self.sgd_iterations = 1
         self.mini_batch_size = 1000
         self.eps_clip = 0.1
-        self.entropy_coeff = 0.0005 #prevents policy collapse by keeping some randomness for exploration
+        self.entropy_coeff = 0.01 #prevents policy collapse by keeping some randomness for exploration
 
         self.device = device
 
@@ -87,7 +115,7 @@ class nn_agent(nn.Module):
         self.discrete_action_heads = nn.ModuleList([nn.Linear(hidden_size, 4),
                                                     nn.Linear(hidden_size, 8)])
 
-        self.optimizer = torch.optim.Adam(self.parameters(), lr = 5e-3)
+        self.optimizer = torch.optim.Adam(self.parameters(), lr = 5e-5)
         self.to(self.device)
 
     def forward(self, obs):
@@ -134,6 +162,7 @@ class nn_agent(nn.Module):
         original_log_prob_pi, entropy = self.get_action_info(obs, torch.Tensor(act).to(self.device))
 
         print("Policy Entropy: ", entropy.mean(axis=0).detach().cpu().numpy().tolist())
+        print("Policy Standev: ", self.logstd.exp().detach().cpu().numpy().tolist())
         print("\nTraining with PPO")
 
         for training_iteration in range(self.sgd_iterations):
@@ -164,7 +193,7 @@ device = "cuda:0"
 ITERATIONS = 1000000
 discount = 1
 agent = nn_agent(512, device)
-env = DerkEnv(n_arenas = 800, turbo_mode = True, reward_function = win_loss_reward_function)#, home_team = classes_team_config, away_team = classes_team_config)
+env = DerkEnv(n_arenas = 800, turbo_mode = True, reward_function = win_loss_reward_function, home_team = classes_team_config, away_team = classes_team_config)
 
 past_selves_ratio = 0.2
 save_model_every = 10
@@ -173,11 +202,18 @@ past_models = []
 
 portion_controlled_by_curr = 1 - (past_selves_ratio/2)
 
+model_checkpoint_schedule = [int(i ** 1.5) for i in range(1000)]
+save_folder = "checkpoints/PPO-GAE-" + str(time.time())
+os.mkdir(save_folder)
+
 for iteration in range(ITERATIONS):
     print("\n-----------------------------ITERATION " + str(iteration) + "-----------------------------")
 
     if iteration % save_model_every == 0:
         past_models.append(copy.deepcopy(agent))
+
+    if iteration in model_checkpoint_schedule:
+        torch.save(agent.state_dict(), save_folder + "/" + str(iteration))
 
     observation = []
     done = []
