@@ -32,7 +32,7 @@ reward_function = {
 }
 
 class nn_agent(nn.Module):
-    def __init__(self, hidden_size, device, activation = nn.ReLU()):
+    def __init__(self, hidden_size, device, activation = nn.Tanh()):
         super().__init__()
         self.device = device
 
