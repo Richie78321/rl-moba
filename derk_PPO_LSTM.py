@@ -73,7 +73,7 @@ class lstm_agent(nn.Module):
         self.learning_rate = 5e-5
         # discount factor, measure of how much you care about rewards in the future vs now
         # should probably be 1.0 for pure win-loss rewards
-        self.gamma = 1.0
+        self.gamma = 0.99
         # whether or not to use Generalized Advantage Estimation (GAE). Allows a flexible tradeoff
         # between bias (value predictions) and variance (true returns), but requires
         # training the value network
