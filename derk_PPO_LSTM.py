@@ -70,14 +70,14 @@ class lstm_agent(nn.Module):
 
         #### HYPERPARAMETERS ####
 
-        self.learning_rate = 5e-5
+        self.learning_rate = 5e-3
         # discount factor, measure of how much you care about rewards in the future vs now
         # should probably be 1.0 for pure win-loss rewards
-        self.gamma = 0.99
+        self.gamma = 1.0
         # whether or not to use Generalized Advantage Estimation (GAE). Allows a flexible tradeoff
         # between bias (value predictions) and variance (true returns), but requires
         # training the value network
-        self.use_gae = True
+        self.use_gae = False
         # we only train value network and use lambda param if we are using GAE
         if self.use_gae:
             # lambda param for GAE estimation, defines the tradeoff between bias
@@ -99,7 +99,7 @@ class lstm_agent(nn.Module):
         #how many times to loop over the entire batch of experience
         self.epochs_per_update = 1
         # how often to recompute hidden states and advantages. Expensive but allows more accurate training
-        self.recompute_every = 10
+        self.recompute_every = 20
         # defines size of trust region, smaller generally means more stable but slower learning
         self.eps_clip = 0.2
         # how much to optimize for entropy, prevents policy collapse by keeping some randomness for exploration
@@ -149,7 +149,7 @@ class lstm_agent(nn.Module):
 
     def get_action(self, obs, state):
         continuous_means, discrete_output, _, state = self(obs, state)
-        actions =  torch.normal(continuous_means, self.logstd.exp()).cpu().detach().numpy()
+        actions =  torch.normal(continuous_means, torch.clip(self.logstd.exp(), 0.002, 2)).cpu().detach().numpy()
 
         for discrete_logits in discrete_output:
             discrete_probs = nn.functional.log_softmax(discrete_logits, dim=1).exp()
@@ -159,7 +159,7 @@ class lstm_agent(nn.Module):
         return actions, state
 
     def get_action_info(self, continuous_means, discrete_output, actions_taken):
-        normal_dists = torch.distributions.Normal(continuous_means, self.logstd.exp())
+        normal_dists = torch.distributions.Normal(continuous_means, torch.clip(self.logstd.exp(), 0.002, 2))
 
         log_probs = normal_dists.log_prob(actions_taken[:,:self.continuous_size])
         entropy = normal_dists.entropy()
@@ -179,7 +179,7 @@ class lstm_agent(nn.Module):
         value = np.concatenate((value, np.zeros(reward.shape[0]).reshape(-1, 1)), axis = 1)
 
         TD_errors = reward + self.gamma * value[:,1:] - value[:,:-1]
-        #calculate discounted returns
+
         advantages = np.zeros(reward.size)
         for i in range(TD_errors.shape[0]):
             gae = 0
@@ -196,7 +196,7 @@ class lstm_agent(nn.Module):
         original_log_prob_pi = original_log_prob_pi.detach()
 
         print("Policy Entropy: ", entropy.mean(axis=0).detach().cpu().numpy().tolist())
-        print("Policy Standev: ", self.logstd.exp().detach().cpu().numpy().tolist())
+        print("Policy Standev: ", torch.clip(self.logstd.exp(), 0.002, 2).detach().cpu().numpy().tolist())
 
         #break observation into fragments
         obs_fragmented = obs.reshape((obs.shape[0] * obs.shape[1]) // self.lstm_fragment_length, self.lstm_fragment_length, 64)
@@ -273,7 +273,7 @@ class lstm_agent(nn.Module):
 device = "cuda:0"
 ITERATIONS = 1000000
 agent = lstm_agent(512, device)
-env = DerkEnv(n_arenas = 100, turbo_mode = True, reward_function = shaped_reward_function, home_team = classes_team_config, away_team = classes_team_config)
+env = DerkEnv(n_arenas = 100, turbo_mode = True, reward_function = win_loss_reward_function, home_team = classes_team_config, away_team = classes_team_config)
 
 save_model_every = 100
 eval_against_gap = 100
