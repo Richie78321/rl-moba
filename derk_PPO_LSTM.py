@@ -8,6 +8,8 @@ import time
 import os
 from tqdm import tqdm
 
+torch.autograd.set_detect_anomaly(True)
+
 shaped_reward_function = {
     "damageEnemyStatue":  0.01,
     "damageEnemyUnit":  0.01,
@@ -63,6 +65,7 @@ classes_team_config = [
       { 'primaryColor': '#00ff00', 'slots': ['Magnum', 'Trombone', 'VampireGland'] },
       { 'primaryColor': '#ff0000', 'slots': ['Cripplers', 'IronBubblegum', 'HealingGland'] }]
 
+
 class lstm_agent(nn.Module):
     def __init__(self, lstm_size, device, activation = nn.Tanh()):
         super().__init__()
@@ -103,7 +106,7 @@ class lstm_agent(nn.Module):
         # defines size of trust region, smaller generally means more stable but slower learning
         self.eps_clip = 0.2
         # how much to optimize for entropy, prevents policy collapse by keeping some randomness for exploration
-        self.entropy_coeff = 0.001
+        self.entropy_coeff = 0.0014
 
         #### ARCHITECTURE ####
 
@@ -149,7 +152,7 @@ class lstm_agent(nn.Module):
 
     def get_action(self, obs, state):
         continuous_means, discrete_output, _, state = self(obs, state)
-        actions =  torch.normal(continuous_means, torch.clip(self.logstd.exp(), 0.002, 2)).cpu().detach().numpy()
+        actions =  torch.normal(continuous_means, self.logstd.exp()).cpu().detach().numpy()
 
         for discrete_logits in discrete_output:
             discrete_probs = nn.functional.log_softmax(discrete_logits, dim=1).exp()
@@ -159,7 +162,7 @@ class lstm_agent(nn.Module):
         return actions, state
 
     def get_action_info(self, continuous_means, discrete_output, actions_taken):
-        normal_dists = torch.distributions.Normal(continuous_means, torch.clip(self.logstd.exp(), 0.002, 2))
+        normal_dists = torch.distributions.Normal(continuous_means, self.logstd.exp())
 
         log_probs = normal_dists.log_prob(actions_taken[:,:self.continuous_size])
         entropy = normal_dists.entropy()
@@ -196,7 +199,7 @@ class lstm_agent(nn.Module):
         original_log_prob_pi = original_log_prob_pi.detach()
 
         print("Policy Entropy: ", entropy.mean(axis=0).detach().cpu().numpy().tolist())
-        print("Policy Standev: ", torch.clip(self.logstd.exp(), 0.002, 2).detach().cpu().numpy().tolist())
+        print("Policy Standev: ", self.logstd.exp().detach().cpu().numpy().tolist())
 
         #break observation into fragments
         obs_fragmented = obs.reshape((obs.shape[0] * obs.shape[1]) // self.lstm_fragment_length, self.lstm_fragment_length, 64)
@@ -278,9 +281,6 @@ env = DerkEnv(n_arenas = 100, turbo_mode = True, reward_function = win_loss_rewa
 save_model_every = 100
 eval_against_gap = 100
 past_models = []
-
-#past_selves_ratio = 0.2
-#portion_controlled_by_curr = 1 - (past_selves_ratio/2)
 
 model_checkpoint_schedule = [int(i ** 1.5) for i in range(1000)]
 save_folder = "checkpoints/PPO-LSTM-" + str(time.time())
