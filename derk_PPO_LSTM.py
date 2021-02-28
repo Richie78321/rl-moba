@@ -8,7 +8,7 @@ import time
 import os
 from tqdm import tqdm
 
-torch.autograd.set_detect_anomaly(True)
+#torch.autograd.set_detect_anomaly(True)
 
 shaped_reward_function = {
     "damageEnemyStatue":  0.01,
@@ -245,7 +245,7 @@ class lstm_agent(nn.Module):
                     #make new calculations of advantage and value targets
                     adv = self.calc_GAE(rew, value.detach().cpu().numpy())
                     value_targets = torch.flatten(value).squeeze().detach().cpu().numpy() + adv
-                    norm_adv = (adv - adv.mean()) / adv.std()
+                    norm_adv = (adv - adv.mean()) / (adv.std() + 1e-8)
 
                 #subset of shuffled indices to use in this minibatch
                 shuffled_fragments = shuffled[minibatch_num*self.fragments_per_batch:(minibatch_num+1)*self.fragments_per_batch]
@@ -260,6 +260,11 @@ class lstm_agent(nn.Module):
                 continuous_means, discrete_output, value, _ = self(obs_fragmented[shuffled_fragments], minibatch_state)
                 curr_logprob_pi, entropy = self.get_action_info(continuous_means, discrete_output, minibatch_act)
                 ratio = torch.exp(curr_logprob_pi - original_log_prob_pi[shuffled_indices])
+
+                # should very rarely be triggered (only shows up if super low probability action is taken)
+                # but in the event that happens this will get rid of the resulting inf values which will
+                # otherwise turn all of the network weights to nans
+                ratio = torch.clamp(ratio, 0, 1e10)
 
                 #loss for the value function
                 value_loss = torch.pow(value - torch.Tensor(value_targets[shuffled_indices]).to(self.device), 2)
