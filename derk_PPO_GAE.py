@@ -173,8 +173,7 @@ class nn_agent(nn.Module):
                     _, _, value = self(torch.Tensor(obs).to(self.device))
                     adv = self.calc_GAE(rew, value.detach().cpu().numpy())
                     value_targets = value.squeeze().detach().cpu().numpy() + adv
-                    norm_adv = (adv - adv.mean()) / adv.std()
-                    del value #frees up GPU memory
+                    norm_adv = (adv - adv.mean()) / (adv.std() + 1e-8)
 
                 shuffled_minibatch = shuffled[minibatch_num*self.mini_batch_size:(minibatch_num+1)*self.mini_batch_size]
                 minibatch_act = torch.Tensor(act[shuffled_minibatch]).to(self.device)
