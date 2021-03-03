@@ -7,6 +7,7 @@ import copy
 import time
 import os
 from tqdm import tqdm
+from torch_truncnorm.TruncatedNormal import TruncatedNormal
 
 #torch.autograd.set_detect_anomaly(True)
 
@@ -96,9 +97,9 @@ class lstm_agent(nn.Module):
         # fragment size determines how many sequential steps we chunk experience into
         # larger size allows more flow of gradients back in time but makes batches less diverse
         # must be a factor of 150 or else some experience will be cut off
-        self.lstm_fragment_length = 10
+        self.lstm_fragment_length = 15
         #batch size in fragments
-        self.fragments_per_batch = 1000 // self.lstm_fragment_length
+        self.fragments_per_batch = 900 // self.lstm_fragment_length
         #how many times to loop over the entire batch of experience
         self.epochs_per_update = 1
         # how often to recompute hidden states and advantages. Expensive but allows more accurate training
@@ -106,14 +107,19 @@ class lstm_agent(nn.Module):
         # defines size of trust region, smaller generally means more stable but slower learning
         self.eps_clip = 0.2
         # how much to optimize for entropy, prevents policy collapse by keeping some randomness for exploration
-        self.entropy_coeff = 0.0014
+        self.entropy_coeff = 0.003
+        # whether to treat each component of an action as independent or not.
+        # by default this should be set to False
+        self.independent_action_components = False
 
         #### ARCHITECTURE ####
 
         self.lstm = nn.LSTM(64, lstm_size, batch_first = True)
 
         self.continuous_size = 3
-        self.logstd = nn.Parameter(torch.zeros(self.continuous_size))
+        self.logstd = nn.Parameter(torch.Tensor([0.693147, 0.693147, 0]))
+        self.continuous_lower_bounds = torch.Tensor([-1, -1, 0]).to(self.device)
+        self.continuous_upper_bounds = torch.Tensor([1, 1, 1]).to(self.device)
         self.continuous_action_head = nn.Sequential(activation, nn.Linear(lstm_size, self.continuous_size))
 
         self.discrete_action_heads = nn.ModuleList([nn.Sequential(activation, nn.Linear(lstm_size, 4)),
@@ -140,19 +146,21 @@ class lstm_agent(nn.Module):
 
         features = lstm_out.reshape(-1, lstm_out.shape[2]) #flattens batch and seq len dimension together
 
-        continuous_actions = self.continuous_action_head(features)
+        continuous_vals = self.continuous_action_head(features)
         #bound action 0 and 1 between -1 and 1, bound action 2 between 0 and 1
-        continuous_actions[:,0:2] = torch.tanh(continuous_actions[:,0:2])
-        continuous_actions[:,2] = torch.sigmoid(continuous_actions[:,2])
+        continuous_vals[:,0:2] = torch.tanh(continuous_vals[:,0:2])
+        continuous_vals[:,2] = torch.sigmoid(continuous_vals[:,2])
 
         discrete_actions = [action_head(features) for action_head in self.discrete_action_heads]
         value = self.value_head(features)
 
-        return continuous_actions, discrete_actions, value, state
+        return continuous_vals, discrete_actions, value, state
 
     def get_action(self, obs, state):
         continuous_means, discrete_output, _, state = self(obs, state)
-        actions =  torch.normal(continuous_means, self.logstd.exp()).cpu().detach().numpy()
+
+        truncNorm = TruncatedNormal(self.device, continuous_means, self.logstd.exp(), self.continuous_lower_bounds, self.continuous_upper_bounds)
+        actions = truncNorm.rsample().detach().cpu().numpy()
 
         for discrete_logits in discrete_output:
             discrete_probs = nn.functional.log_softmax(discrete_logits, dim=1).exp()
@@ -162,10 +170,9 @@ class lstm_agent(nn.Module):
         return actions, state
 
     def get_action_info(self, continuous_means, discrete_output, actions_taken):
-        normal_dists = torch.distributions.Normal(continuous_means, self.logstd.exp())
-
-        log_probs = normal_dists.log_prob(actions_taken[:,:self.continuous_size])
-        entropy = normal_dists.entropy()
+        truncNorm = TruncatedNormal(self.device, continuous_means, self.logstd.exp(), self.continuous_lower_bounds, self.continuous_upper_bounds)
+        log_probs = truncNorm.log_prob(actions_taken[:,:self.continuous_size])
+        entropy = truncNorm._entropy
 
         for i in range(len(discrete_output)):
             discrete_probs = nn.functional.log_softmax(discrete_output[i], dim=1).exp()
@@ -259,23 +266,34 @@ class lstm_agent(nn.Module):
                 minibatch_state = [state[0][shuffled_fragments].to(self.device), state[1][shuffled_fragments].to(self.device)]
                 continuous_means, discrete_output, value, _ = self(obs_fragmented[shuffled_fragments], minibatch_state)
                 curr_logprob_pi, entropy = self.get_action_info(continuous_means, discrete_output, minibatch_act)
-                ratio = torch.exp(curr_logprob_pi - original_log_prob_pi[shuffled_indices])
 
-                # should very rarely be triggered (only shows up if super low probability action is taken)
-                # but in the event that happens this will get rid of the resulting inf values which will
-                # otherwise turn all of the network weights to nans
-                ratio = torch.clamp(ratio, 0, 1e10)
+                #PPO clipped policy loss
+                if self.independent_action_components:
+                    log_ratio = curr_logprob_pi - original_log_prob_pi[shuffled_indices]
+
+                    #clip out massive ratios so they don't produce inf values
+                    clipped_log_ratio = torch.clamp(log_ratio, -80, 80)
+                    ratio = torch.exp(clipped_log_ratio)
+
+                    surrogate_loss1 = ratio * minibatch_norm_adv.unsqueeze(1)
+                    surrogate_loss2 = torch.clamp(ratio, 1 - self.eps_clip, 1 + self.eps_clip) * minibatch_norm_adv.unsqueeze(1)
+                else:
+                    log_ratio = curr_logprob_pi.sum(axis=1) - original_log_prob_pi[shuffled_indices].sum(axis=1)
+
+                    #clip out massive ratios so they don't produce inf values
+                    clipped_log_ratio = torch.clamp(log_ratio, -80, 80)
+                    ratio = torch.exp(clipped_log_ratio)
+
+                    surrogate_loss1 = ratio * minibatch_norm_adv
+                    surrogate_loss2 = torch.clamp(ratio, 1 - self.eps_clip, 1 + self.eps_clip) * minibatch_norm_adv
 
                 #loss for the value function
                 value_loss = torch.pow(value - torch.Tensor(value_targets[shuffled_indices]).to(self.device), 2)
 
-                #PPO clipped policy loss
-                surrogate_loss1 = ratio.sum(axis = 1) * minibatch_norm_adv
-                surrogate_loss2 = torch.clamp(ratio, 1 - self.eps_clip, 1 + self.eps_clip).sum(axis=1) * minibatch_norm_adv
-                loss = -torch.min(surrogate_loss1, surrogate_loss2) - self.entropy_coeff * entropy.sum(axis=1) + self.value_coeff * value_loss
+                loss = -torch.min(surrogate_loss1, surrogate_loss2).mean() - self.entropy_coeff * entropy.mean() + self.value_coeff * value_loss.mean()
 
                 self.optimizer.zero_grad()
-                loss.mean().backward()
+                loss.backward()
                 self.optimizer.step()
 
 device = "cuda:0"
