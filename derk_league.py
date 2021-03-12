@@ -307,7 +307,14 @@ class lstm_agent(nn.Module):
 device = "cuda:0"
 ITERATIONS = 1000000
 agent = lstm_agent(512, device)
-env = DerkEnv(n_arenas = 800, turbo_mode = True, reward_function = win_loss_reward_function, home_team = classes_team_config, away_team = classes_team_config)
+
+arm_weapons = ["Talons", "BloodClaws", "Cleavers", "Cripplers", "Pistol", "Magnum", "Blaster"]
+misc_weapons = ["FrogLegs", "IronBubblegum", "HeliumBubblegum", "Shell", "Trombone"]
+tail_weapons = ["HealingGland", "VampireGland", "ParalyzingDart"]
+
+n_arenas = 800
+random_configs = [{"slots": [random.choice(arm_weapons), random.choice(misc_weapons), random.choice(tail_weapons)]} for i in range(3 * n_arenas // 2)]
+env = DerkEnv(n_arenas = n_arenas, turbo_mode = True, reward_function = win_loss_reward_function, home_team = random_configs, away_team = random_configs)
 
 save_model_every = 50
 eval_against_gap = 100
