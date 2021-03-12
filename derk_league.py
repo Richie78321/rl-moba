@@ -75,18 +75,19 @@ class lstm_agent(nn.Module):
         #### HYPERPARAMETERS ####
 
         self.learning_rate = 2e-3
+        self.lr_decay = 0.9992 #exponential decay of learning rate
         # discount factor, measure of how much you care about rewards in the future vs now
         # should probably be 1.0 for pure win-loss rewards
         self.gamma = 1.0
         # whether or not to use Generalized Advantage Estimation (GAE). Allows a flexible tradeoff
         # between bias (value predictions) and variance (true returns), but requires
         # training the value network
-        self.use_gae = False
+        self.use_gae = True
         # we only train value network and use lambda param if we are using GAE
         if self.use_gae:
             # lambda param for GAE estimation, defines the tradeoff between bias
             # (using the value function) and variance (using actual returns)
-            self.lamda = 0.99
+            self.lamda = 0.95
             # how much to optimize the value function, too much interferes with policy
             # leaning, too little and value function won't be accurate
             self.value_coeff = 0.5
@@ -101,20 +102,22 @@ class lstm_agent(nn.Module):
         #batch size in fragments
         self.fragments_per_batch = 900 // self.lstm_fragment_length
         #how many times to loop over the entire batch of experience
-        self.epochs_per_update = 1
+        self.epochs_per_update = 2
         # how often to recompute hidden states and advantages. Expensive but allows more accurate training
         self.recompute_every = 20
         # defines size of trust region, smaller generally means more stable but slower learning
         self.eps_clip = 0.2
         # how much to optimize for entropy, prevents policy collapse by keeping some randomness for exploration
-        self.entropy_coeff = 0.004
+        self.entropy_coeff = 0.01
+        self.entropy_coeff_decay = 0.9997
         # whether to treat each component of an action as independent or not.
         # by default this should be set to False
         self.independent_action_components = False
 
         #### ARCHITECTURE ####
 
-        self.lstm = nn.LSTM(64, lstm_size, batch_first = True)
+        self.fc = nn.Sequential(nn.Linear(64, lstm_size), activation)
+        self.lstm = nn.LSTM(lstm_size, lstm_size, batch_first = True)
 
         self.continuous_size = 3
         self.logstd = nn.Parameter(torch.Tensor([0.693147, 0.693147, 0]))
@@ -128,13 +131,14 @@ class lstm_agent(nn.Module):
         self.value_head = nn.Linear(lstm_size, 1)
 
         self.optimizer = torch.optim.Adam(self.parameters(), lr = self.learning_rate)
+        self.lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer = self.optimizer, gamma = self.lr_decay)
         self.to(self.device)
 
     def forward(self, obs, state):
         if len(obs.shape) < 3:
-            lstm_in = torch.Tensor(obs).to(self.device).unsqueeze(1)
+            lstm_in = self.fc(torch.Tensor(obs).to(self.device)).unsqueeze(1)
         else:
-            lstm_in = torch.Tensor(obs).to(self.device)
+            lstm_in = self.fc(torch.Tensor(obs).to(self.device))
 
         if state == None:
             lstm_out, state = self.lstm(lstm_in)
@@ -201,8 +205,10 @@ class lstm_agent(nn.Module):
         return advantages
 
     def update(self, obs, act, rew):
-        #flatten actions
-        act = act.reshape(-1, act.shape[2])
+        self.lr_scheduler.step() #decay learning rate one per iteration
+        self.entropy_coeff *= self.entropy_coeff_decay
+
+        act = act.reshape(-1, act.shape[2]) #flatten actions
 
         continuous_means, discrete_output, _, _ = self(obs, None)
         original_log_prob_pi, entropy = self.get_action_info(continuous_means, discrete_output, torch.Tensor(act).to(self.device))
@@ -217,7 +223,7 @@ class lstm_agent(nn.Module):
         for epoch in range(self.epochs_per_update):
             shuffled = torch.randperm(obs_fragmented.shape[0])
 
-            print("\nPPO epoch", epoch)
+            print("\nTraining PPO epoch", epoch)
             for minibatch_num in tqdm(range((obs_fragmented.shape[0]//self.fragments_per_batch) - 1)):
                 #recompute advantages and hidden states periodically to keep updates accurate
                 if minibatch_num % self.recompute_every == 0:
@@ -314,6 +320,14 @@ model_checkpoint_schedule = [int(i ** 1.5) for i in range(1000)]
 save_folder = "checkpoints/PPO-LSTM-LEAGUE" + str(time.time())
 os.mkdir(save_folder)
 
+for i in range(100):
+    obs = env.reset()
+    print(obs)
+    while True:
+        obs, rew, done, _ = env.step(np.zeros((env.n_agents, 5)))
+        if all(done):
+            break
+
 for iteration in range(ITERATIONS):
     print("\n-----------------------------ITERATION " + str(iteration) + "-----------------------------")
 
@@ -338,6 +352,7 @@ for iteration in range(ITERATIONS):
         while True:
             action_n = np.zeros((env.n_agents, 5))
             for i in range(league_size):
+                print(observation_n)
                 action_n[league_agent_mappings[i]], states[i] = league[i].get_action(observation_n[league_agent_mappings[i]], states[i])
 
             #act in environment and observe the new obervation and reward (done tells you if episode is over)
