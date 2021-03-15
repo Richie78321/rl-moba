@@ -313,7 +313,7 @@ arm_weapons = ["Talons", "BloodClaws", "Cleavers", "Cripplers", "Pistol", "Magnu
 misc_weapons = ["FrogLegs", "IronBubblegum", "HeliumBubblegum", "Shell", "Trombone"]
 tail_weapons = ["HealingGland", "VampireGland", "ParalyzingDart"]
 
-n_arenas = 800
+n_arenas = 80
 random_configs = [{"slots": [random.choice(arm_weapons), random.choice(misc_weapons), random.choice(tail_weapons)]} for i in range(3 * n_arenas // 2)]
 env = DerkEnv(n_arenas = n_arenas, turbo_mode = True, reward_function = win_loss_reward_function, home_team = random_configs, away_team = random_configs)
 
@@ -323,7 +323,7 @@ league = [lstm_agent(512, device) for i in range(league_size)]
 
 model_checkpoint_schedule = [2*int(i ** 1.6) for i in range(1000)]
 save_folder = "checkpoints/PPO-LSTM-LEAGUE" + str(time.time())
-os.mkdir(save_folder)
+os.makedirs(save_folder)
 
 for iteration in range(ITERATIONS):
     print("\n-----------------------------ITERATION " + str(iteration) + "-----------------------------")
