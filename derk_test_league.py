@@ -224,7 +224,7 @@ for iteration in range(ITERATIONS):
             #act in environment and observe the new obervation and reward (done tells you if episode is over)
             observation_n, reward_n, done_n, _ = env.step(action_n)
 
-            if all(done_n):
+            if all(done_n): # We have to update ELO here
               break
 
 env.close()
