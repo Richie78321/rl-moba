@@ -6,6 +6,7 @@ import numpy as np
 import copy
 import time
 import os
+from random import shuffle
 from tqdm import tqdm
 from torch_truncnorm.TruncatedNormal import TruncatedNormal
 
@@ -201,6 +202,7 @@ for root, dirs, files in os.walk(root_dir):
         count+=1
         league.append(temp)
 
+shuffle(league)
 league_size = len(league) # Number of policies.  Must be even because we don't want byes or anything like that.
 teams_per_member=5 # Number of teams per policy.  Must be odd so there are no ties.  Best of x.
 assert league_size%2 == 0, "Number of policies in the TEST_LEAGUE_AGENTS folder must be even"
@@ -255,6 +257,7 @@ for iteration in range(ITERATIONS):
                     
                     league[i].ELO+=k*(policy1actual-policy1prob)
                     league[i+1].ELO+=k*(policy2actual-policy2prob)
+                    print("Policy "+str(league[i].id)+" vs Policy "+str(league[i+1].id))
                     print(league[i].ELO)
                     print(league[i+1].ELO)
                     
