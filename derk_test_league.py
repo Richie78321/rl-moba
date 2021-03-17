@@ -199,7 +199,7 @@ for root, dirs, files in os.walk(root_dir):
 league_size = len(league) # Number of policies.  Must be even because we don't want byes or anything like that.
 teams_per_member=5 # Number of teams per policy.  Must be odd so there are no ties.  Best of x.
 assert league_size%2 == 0, "Number of policies in the TEST_LEAGUE_AGENTS folder must be even"
-assert teams%2 == 1, "Number of teams per policy must be odd"
+assert teams_per_member%2 == 1, "Number of teams per policy must be odd"
 
 env = DerkEnv(n_arenas = (league_size*teams_per_member)/2, turbo_mode = True, reward_function = win_loss_reward_function, home_team = classes_team_config, away_team = classes_team_config)
 
@@ -207,6 +207,7 @@ for iteration in range(ITERATIONS):
     print("\n-----------------------------ITERATION " + str(iteration) + "-----------------------------")
 
     #randomize matchings between policies to start (This will eventually be more intelligent) - Can just sort by ELO and then assign that way
+    #Policy index 0 plays policy index 1, 2 plays 3, and so on.
     policy_matchup_IDS=np.random.permutation(league_size)
 
     observation = [[] for i in range(league_size)]
@@ -218,7 +219,7 @@ for iteration in range(ITERATIONS):
     with torch.no_grad():
         while True:
             action_n = np.zeros((env.n_agents, 5)) # Array of 0's that is the right size
-            for i in range(league_size):
+            for i in range(league_size): #action_n refers to an agent per index, so we assign agents sequentially to each policy based on our order config and then update
                 action_n[list(range(teams_per_member*i*3, teams_per_member*(i+1)*3))], states[i] = league[policy_matchup_IDS[i]].get_action(observation_n[list(range(teams_per_member*i*3, teams_per_member*(i+1)*3))], states[i]) # league is where the policies are stored
 
             #act in environment and observe the new obervation and reward (done tells you if episode is over)
