@@ -9,6 +9,7 @@ import os
 from tqdm import tqdm
 from torch_truncnorm.TruncatedNormal import TruncatedNormal
 import random
+from PBT import *
 
 torch.autograd.set_detect_anomaly(True)
 
@@ -67,7 +68,7 @@ classes_team_config = [
       { 'primaryColor': '#00ff00', 'slots': ['Magnum', 'Trombone', 'VampireGland'] },
       { 'primaryColor': '#ff0000', 'slots': ['Cripplers', 'IronBubblegum', 'HealingGland'] }]
 
-class lstm_agent(nn.Module):
+class lstm_agent(PBTAgent):
     def __init__(self, lstm_size, device, activation = nn.Tanh(), hyperparams = {}):
         super().__init__()
         self.device = device
@@ -138,6 +139,15 @@ class lstm_agent(nn.Module):
         self.optimizer = torch.optim.Adam(self.parameters(), lr = self.hyperparams["learning_rate"])
 
         self.to(self.device)
+
+    def get_hyperparams(self):
+        return self.hyperparams
+
+    def update_hyperparams(self, hyperparams_changed):
+        for changed_key in hyperparams_changed.keys():
+            self.hyperparams[changed_key] = hyperparams_changed[changed_key]
+            
+        on_hyperparam_change(hyperparams_changed.keys())
 
     def on_hyperparam_change(self, hyperparams_changed):
         """To be run every time the hyperparameters of the model change.
