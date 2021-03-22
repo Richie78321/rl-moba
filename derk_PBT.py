@@ -68,42 +68,44 @@ classes_team_config = [
       { 'primaryColor': '#ff0000', 'slots': ['Cripplers', 'IronBubblegum', 'HealingGland'] }]
 
 class lstm_agent(nn.Module):
-    def __init__(self, lstm_size, device, activation = nn.Tanh(), hyperparams = None):
+    def __init__(self, lstm_size, device, activation = nn.Tanh(), hyperparams = {}):
         super().__init__()
         self.device = device
 
         #### HYPERPARAMETERS ####
-        if hyperparams is None:
-            self.hyperparams = {
-                "learning_rate": 2e-3,
-                # discount factor, measure of how much you care about rewards in the future vs now
-                # should probably be 1.0 for pure win-loss rewards
-                "gamma": 1.0,
-                # whether or not to use Generalized Advantage Estimation (GAE). Allows a flexible tradeoff
-                # between bias (value predictions) and variance (true returns), but requires
-                # training the value network
-                "use_gae": True,
-                # lambda param for GAE estimation, defines the tradeoff between bias
-                # (using the value function) and variance (using actual returns)
-                "lambda": 0.96,
-                # how much to optimize the value function, too much interferes with policy
-                # leaning, too little and value function won't be accurate
-                "value_coeff": 0.5,
-                # fragment size determines how many sequential steps we chunk experience into
-                # larger size allows more flow of gradients back in time but makes batches less diverse
-                # must be a factor of 150 or else some experience will be cut off
-                "lstm_fragment_length": 15,
-                #how many times to loop over the entire batch of experience
-                "epochs_per_update": 2,
-                # how often to recompute hidden states and advantages. Expensive but allows more accurate training
-                "recompute_every": 20,
-                # defines size of trust region, smaller generally means more stable but slower learning
-                "eps_clip": 0.2,
-                # how much to optimize for entropy, prevents policy collapse by keeping some randomness for exploration
-                "entropy_coeff": 0.01,
-            }
-        else:
-            self.hyperparams = hyperparams
+        default_hyperparams = {
+            "learning_rate": 2e-3,
+            # discount factor, measure of how much you care about rewards in the future vs now
+            # should probably be 1.0 for pure win-loss rewards
+            "gamma": 1.0,
+            # whether or not to use Generalized Advantage Estimation (GAE). Allows a flexible tradeoff
+            # between bias (value predictions) and variance (true returns), but requires
+            # training the value network
+            "use_gae": True,
+            # lambda param for GAE estimation, defines the tradeoff between bias
+            # (using the value function) and variance (using actual returns)
+            "lambda": 0.96,
+            # how much to optimize the value function, too much interferes with policy
+            # leaning, too little and value function won't be accurate
+            "value_coeff": 0.5,
+            # fragment size determines how many sequential steps we chunk experience into
+            # larger size allows more flow of gradients back in time but makes batches less diverse
+            # must be a factor of 150 or else some experience will be cut off
+            "lstm_fragment_length": 15,
+            #how many times to loop over the entire batch of experience
+            "epochs_per_update": 2,
+            # how often to recompute hidden states and advantages. Expensive but allows more accurate training
+            "recompute_every": 20,
+            # defines size of trust region, smaller generally means more stable but slower learning
+            "eps_clip": 0.2,
+            # how much to optimize for entropy, prevents policy collapse by keeping some randomness for exploration
+            "entropy_coeff": 0.01,
+        }
+
+        self.hyperparams = hyperparams
+        for hyperparam_key in default_hyperparams.keys():
+            if hyperparam_key not in hyperparams:
+                self.hyperparams[hyperparam_key] = default_hyperparams[hyperparam_key]
 
         if not self.hyperparams["use_gae"]:
             #if not using value network, don't train it and set lambda decay = 1.0
