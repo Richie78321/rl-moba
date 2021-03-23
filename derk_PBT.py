@@ -103,7 +103,7 @@ class lstm_agent(PBTAgent):
             "entropy_coeff": 0.01,
         }
 
-        self.hyperparams = hyperparams
+        self.hyperparams = hyperparams.copy()
         for hyperparam_key in default_hyperparams.keys():
             if hyperparam_key not in hyperparams:
                 self.hyperparams[hyperparam_key] = default_hyperparams[hyperparam_key]
@@ -143,11 +143,23 @@ class lstm_agent(PBTAgent):
     def get_hyperparams(self):
         return self.hyperparams
 
-    def update_hyperparams(self, hyperparams_changed):
+    def update_hyperparams(self, hyperparams_changed, evoke_update_event):
+        if evoke_update_event:
+            # Print the change in hyperparameters.
+            print("Agent hyperparameters changed. Original:")
+            hyperparams_changing = {}
+            for changed_key in hyperparams_changed.keys():
+                hyperparams_changing[changed_key] = self.hyperparams[changed_key]
+            print(hyperparams_changing)
+
+            print("New:")
+            print(hyperparams_changed)
+
         for changed_key in hyperparams_changed.keys():
             self.hyperparams[changed_key] = hyperparams_changed[changed_key]
             
-        on_hyperparam_change(hyperparams_changed.keys())
+        if evoke_update_event:
+            self.on_hyperparam_change(hyperparams_changed.keys())
 
     def on_hyperparam_change(self, hyperparams_changed):
         """To be run every time the hyperparameters of the model change.
@@ -338,9 +350,30 @@ n_arenas = 80
 random_configs = [{"slots": [random.choice(arm_weapons), random.choice(misc_weapons), random.choice(tail_weapons)]} for i in range(3 * n_arenas // 2)]
 env = DerkEnv(n_arenas = n_arenas, turbo_mode = True, reward_function = win_loss_reward_function, home_team = random_configs, away_team = random_configs)
 
-league_size = 10
-teams_per_member = (env.n_agents // 3) // league_size
-league = [lstm_agent(512, device) for i in range(league_size)]
+# PBT Parameters
+population_size = 10
+pbt_iterations_per_epoch = 10
+# Define which hyperparameters to exploit and how to copy the values.
+exploit_methods = {
+    'learning_rate': lambda x: x,
+    'entropy_coeff': lambda x: x,
+    'value_coeff': lambda x: x,
+}
+# Define which hyperparameters to explore and how to.
+perturb_explore = get_perturb_explore()
+explore_methods = {
+    'learning_rate': perturb_explore,
+    'entropy_coeff': perturb_explore,
+    'value_coeff': perturb_explore,
+}
+
+teams_per_member = (env.n_agents // 3) // population_size
+# Initialize population with uniformly distributed hyperparameters.
+population = [lstm_agent(512, device, hyperparams={
+    'learning_rate': np.random.uniform(0.0001, 0.01),
+    'entropy_coeff': np.random.uniform(0.001, 0.1),
+    'value_coeff': np.random.uniform(0.25, 1)
+}) for i in range(population_size)]
 
 model_checkpoint_schedule = [2*int(i ** 1.6) for i in range(1000)]
 save_folder = "checkpoints/PPO-LSTM-PBT" + str(time.time())
@@ -352,31 +385,31 @@ for iteration in range(ITERATIONS):
     #randomize matchings between league members
     scrambled_team_IDS = np.random.permutation(env.n_agents // 3)
     league_agent_mappings = []
-    for i in range(league_size):
+    for i in range(population_size):
         member_matches = scrambled_team_IDS[teams_per_member*i:teams_per_member*(i+1)]
         league_agent_mappings.append(np.concatenate([(member_matches * 3) + i for i in range(3)], axis = 0))
 
     if iteration in model_checkpoint_schedule:
-        for i in range(league_size):
-            torch.save(league[i].state_dict(), save_folder + "/" + str(iteration) + "_" + str(i))
+        for i in range(population_size):
+            torch.save(population[i].state_dict(), save_folder + "/" + str(iteration) + "_" + str(i))
 
-    observation = [[] for i in range(league_size)]
-    action = [[] for i in range(league_size)]
-    reward = [[] for i in range(league_size)]
-    states = [None for i in range(league_size)]
+    observation = [[] for i in range(population_size)]
+    action = [[] for i in range(population_size)]
+    reward = [[] for i in range(population_size)]
+    states = [None for i in range(population_size)]
 
     observation_n = env.reset()
     with torch.no_grad():
         while True:
             action_n = np.zeros((env.n_agents, 5))
-            for i in range(league_size):
-                action_n[league_agent_mappings[i]], states[i] = league[i].get_action(observation_n[league_agent_mappings[i]], states[i])
+            for i in range(population_size):
+                action_n[league_agent_mappings[i]], states[i] = population[i].get_action(observation_n[league_agent_mappings[i]], states[i])
 
             #act in environment and observe the new obervation and reward (done tells you if episode is over)
             observation_n, reward_n, done_n, _ = env.step(action_n)
 
             #collect experience data to learn from
-            for i in range(league_size):
+            for i in range(population_size):
                 observation[i].append(observation_n[league_agent_mappings[i]])
                 reward[i].append(reward_n[league_agent_mappings[i]])
                 action[i].append(action_n[league_agent_mappings[i]])
@@ -385,15 +418,24 @@ for iteration in range(ITERATIONS):
               break
 
         # reshapes all collected data to [episode num, timestep]
-        for i in range(league_size):
+        for i in range(population_size):
             observation[i] = np.swapaxes(np.array(observation[i]), 0, 1)
             reward[i] = np.swapaxes(np.array(reward[i]), 0, 1)
             action[i] = np.swapaxes(np.array(action[i]), 0, 1)
 
     #learn from experience
     print("Training League With PPO")
-    for i in range(league_size):
-        print("\nTraining League Member", i)
-        league[i].update(observation[i], action[i], reward[i])
+    for i in range(population_size):
+        print("\nTraining Population Member", i)
+        population[i].update(observation[i], action[i], reward[i])
+
+    # Do PBT update
+    if iteration > 0 and iteration % pbt_iterations_per_epoch == 0:
+        print("Completing PBT Update.")
+        cumulative_rewards = np.array(reward).sum((1, 2)).tolist()
+        print("Cumulative rewards per agent:", cumulative_rewards)
+        
+        agents_and_rewards = list(zip(population, cumulative_rewards))
+        pbt_update(agents_and_rewards, exploit_methods, explore_methods)
 
 env.close()
