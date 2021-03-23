@@ -352,7 +352,7 @@ env = DerkEnv(n_arenas = n_arenas, turbo_mode = True, reward_function = win_loss
 
 # PBT Parameters
 population_size = 10
-pbt_iterations_per_epoch = 10
+pbt_min_iterations = 10
 # Define which hyperparameters to exploit and how to copy the values.
 exploit_methods = {
     'learning_rate': lambda x: x,
@@ -374,6 +374,8 @@ population = [lstm_agent(512, device, hyperparams={
     'entropy_coeff': np.random.uniform(0.001, 0.1),
     'value_coeff': np.random.uniform(0.25, 1)
 }) for i in range(population_size)]
+# Record the last PBT update
+last_PBT_update = [0] * len(population)
 
 model_checkpoint_schedule = [2*int(i ** 1.6) for i in range(1000)]
 save_folder = "checkpoints/PPO-LSTM-PBT" + str(time.time())
@@ -429,13 +431,17 @@ for iteration in range(ITERATIONS):
         print("\nTraining Population Member", i)
         population[i].update(observation[i], action[i], reward[i])
 
-    # Do PBT update
-    if iteration > 0 and iteration % pbt_iterations_per_epoch == 0:
-        print("Completing PBT Update.")
+    agent_pbt_ready = [iteration - x >= pbt_min_iterations - 1 for x in last_PBT_update]
+    if any(agent_pbt_ready):
         cumulative_rewards = np.array(reward).sum((1, 2)).tolist()
         print("Cumulative rewards per agent:", cumulative_rewards)
-        
-        agents_and_rewards = list(zip(population, cumulative_rewards))
-        pbt_update(agents_and_rewards, exploit_methods, explore_methods)
+
+        agents_and_rewards = list(zip(population, cumulative_rewards, agent_pbt_ready))
+        updated_agents = pbt_update_bottom(agents_and_rewards, exploit_methods, explore_methods)
+
+        for updated_agent_index in updated_agents:
+            last_PBT_update[updated_agent_index] = iteration
+
+        print("Completed PBT update for {} agents".format(len(updated_agents)))
 
 env.close()
