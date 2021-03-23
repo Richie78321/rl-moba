@@ -13,16 +13,17 @@ class PBTAgent(ABC, nn.Module):
     pass
 
   @abstractmethod
-  def update_hyperparams(self, hyperparams_changed: Dict[str, any]) -> None:
+  def update_hyperparams(self, hyperparams_changed: Dict[str, any], evoke_update_event: bool = True) -> None:
     pass
 
-  def exploit(self, other_agent: PBTAgent, exploit_methods: Dict[str, Callable[[any], any]]) -> None:
+  def exploit(self, other_agent: PBTAgent, exploit_methods: Dict[str, Callable[[any], any]], evoke_update_event: bool = True) -> None:
     """Exploit another agent by copying its hyperparameters and current model parameters.
 
     Args:
         other_agent (PBTAgent): The agent to exploit.
         exploit_methods (Dict[str, Callable[[any], any]])): The dictionary of exploitation methods where the key is
           the name of the hyperparameter.
+        evoke_update_event (bool) Whether or not to evoke the hyperparameter update event. When in doubt, keep it true.
     """
     # Copy module parameters
     self.load_state_dict(other_agent.state_dict())
@@ -36,15 +37,16 @@ class PBTAgent(ABC, nn.Module):
       
       hyperparams_to_update[hyperparam_key] = exploit_methods[hyperparam_key](other_agent_hyperparams[hyperparam_key])
 
-    self.update_hyperparams(hyperparams_to_update)
+    self.update_hyperparams(hyperparams_to_update, evoke_update_event)
 
-  def explore(self, explore_methods: Dict[str, Callable[[any], any]]) -> None:
+  def explore(self, explore_methods: Dict[str, Callable[[any], any]], evoke_update_event: bool = True) -> None:
     """Explore the hyperparameter space using exploration methods that take input to the
     old hyperparameter and output the new hyperparameter.
 
     Args:
         explore_methods (Dict[str, Callable[[any], any]]): The dictionary of exploration methods
           where the key is the name of the hyperparameter.
+        evoke_update_event (bool) Whether or not to evoke the hyperparameter update event. When in doubt, keep it true.
     """
     
     hyperparams_to_update = {}
@@ -55,7 +57,7 @@ class PBTAgent(ABC, nn.Module):
       
       hyperparams_to_update[hyperparam_key] = explore_methods[hyperparam_key](hyperparams[hyperparam_key])
 
-    self.update_hyperparams(hyperparams_to_update)
+    self.update_hyperparams(hyperparams_to_update, evoke_update_event)
 
 def get_perturb_explore(perturbation_factor: float = 0.2) -> Callable[[float], float]:
   """Get a perturb exploration method using the given perturbation factor.
@@ -100,5 +102,6 @@ def pbt_update(agents_and_rewards: List[Tuple[PBTAgent, float]], exploit_methods
   exploiter_agents = [x[0] for x in agents_and_rewards[num_to_exploit:]]
 
   for agent in exploiter_agents:
-    agent.exploit(random.choice(exploited_agents), exploit_methods)
+    # Don't evoke update event because running explore directly after exploit.
+    agent.exploit(random.choice(exploited_agents), exploit_methods, evoke_update_event=False)
     agent.explore(explore_methods)
