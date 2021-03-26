@@ -10,56 +10,8 @@ from tqdm import tqdm
 from torch_truncnorm.TruncatedNormal import TruncatedNormal
 import random
 from derk_PPO_LSTM import lstm_agent
+from reward_functions import *
 
-shaped_reward_function = {
-    "damageEnemyStatue":  0.01,
-    "damageEnemyUnit":  0.01,
-    "killEnemyStatue": 0.1,
-    "killEnemyUnit":  0.02,
-    "healFriendlyStatue":  0.02,
-    "healTeammate1": 0.01,
-    "healTeammate2":  0.01,
-    "timeSpentHomeBase": 0,
-    "timeSpentHomeTerritory": 0,
-    "timeSpentAwayTerritory": 0,
-    "timeSpentAwayBase": 0,
-    "damageTaken": - 0.01,
-    "friendlyFire": - 0.01,
-    "healEnemy": - 0.01,
-    "fallDamageTaken": -.1,
-    "statueDamageTaken": - 0.04,
-    "manualBonus": 0,
-    "victory": 2,
-    "loss": -2,
-    "tie": 0,
-    "teamSpirit": 0.3,
-    "timeScaling": 1.0,
-}
-
-win_loss_reward_function = {
-    "damageEnemyStatue": 0,
-    "damageEnemyUnit": 0,
-    "killEnemyStatue": 0,
-    "killEnemyUnit": 0,
-    "healFriendlyStatue": 0.,
-    "healTeammate1": 0,
-    "healTeammate2": 0,
-    "timeSpentHomeBase": 0,
-    "timeSpentHomeTerritory": 0,
-    "timeSpentAwayTerritory": 0,
-    "timeSpentAwayBase": 0,
-    "damageTaken": 0,
-    "friendlyFire": 0,
-    "healEnemy": 0,
-    "fallDamageTaken": 0,
-    "statueDamageTaken": 0,
-    "manualBonus": 0,
-    "victory": 0.3333333333333,
-    "loss": 0,
-    "tie": 0.16666666666666,
-    "teamSpirit": 1.0,
-    "timeScaling": 1.0,
-}
 device = "cuda:0"
 ITERATIONS = 1000000
 agent = lstm_agent(512, device)

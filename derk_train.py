@@ -10,6 +10,7 @@ from tqdm import tqdm
 from torch_truncnorm.TruncatedNormal import TruncatedNormal
 import random
 from derk_PPO_LSTM import lstm_agent
+from reward_functions import *
 
 device = "cuda:0"
 ITERATIONS = 1000000
