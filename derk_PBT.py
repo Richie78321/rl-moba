@@ -298,7 +298,8 @@ class lstm_agent(PBTAgent):
 
                 #subset of shuffled indices to use in this minibatch
                 shuffled_fragments = shuffled[minibatch_num*self.fragments_per_batch:(minibatch_num+1)*self.fragments_per_batch]
-                shuffled_indices = torch.cat([((shuffled_fragments * self.hyperparams["lstm_fragment_length"]) + i) for i in range(self.hyperparams["lstm_fragment_length"])], axis = 0)
+                fragment_indice_list = [((shuffled_fragments.unsqueeze(1) * self.lstm_fragment_length) + i) for i in range(self.lstm_fragment_length)]
+                shuffled_indices = torch.cat(fragment_indice_list, axis = 1).flatten()
 
                 #get actions and normalized advantages for this minibatch
                 minibatch_act = torch.Tensor(act[shuffled_indices]).to(self.device)
