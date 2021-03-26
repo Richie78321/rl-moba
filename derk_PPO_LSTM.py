@@ -74,8 +74,8 @@ class lstm_agent(nn.Module):
 
         #### HYPERPARAMETERS ####
 
-        self.learning_rate = 2e-3
-        self.lr_decay = 0.999 #exponential decay of learning rate
+        self.learning_rate = 5e-5
+        self.lr_decay = 0.9995 #exponential decay of learning rate
         # discount factor, measure of how much you care about rewards in the future vs now
         # should probably be 1.0 for pure win-loss rewards
         self.gamma = 1.0
@@ -90,7 +90,7 @@ class lstm_agent(nn.Module):
             self.lamda = 0.95
             # how much to optimize the value function, too much interferes with policy
             # leaning, too little and value function won't be accurate
-            self.value_coeff = 0.5
+            self.value_coeff = 1.0
         else:
             #if not using value network, don't train it and set lambda decay = 1.0
             self.lamda = 1.0
@@ -108,7 +108,7 @@ class lstm_agent(nn.Module):
         # defines size of trust region, smaller generally means more stable but slower learning
         self.eps_clip = 0.2
         # how much to optimize for entropy, prevents policy collapse by keeping some randomness for exploration
-        self.entropy_coeff = 0.01
+        self.entropy_coeff = 0.04
         self.entropy_coeff_decay = 0.9995
         # whether to treat each component of an action as independent or not.
         # by default this should be set to False
@@ -214,6 +214,8 @@ class lstm_agent(nn.Module):
         original_log_prob_pi, entropy = self.get_action_info(continuous_means, discrete_output, torch.Tensor(act).to(self.device))
         original_log_prob_pi = original_log_prob_pi.detach()
 
+        print(continuous_means.std(axis=0).mean().item())
+
         print("Policy Entropy: ", entropy.mean(axis=0).detach().cpu().numpy().tolist())
         print("Policy Standev: ", self.logstd.exp().detach().cpu().numpy().tolist())
 
@@ -264,7 +266,8 @@ class lstm_agent(nn.Module):
 
                 #subset of shuffled indices to use in this minibatch
                 shuffled_fragments = shuffled[minibatch_num*self.fragments_per_batch:(minibatch_num+1)*self.fragments_per_batch]
-                shuffled_indices = torch.cat([((shuffled_fragments * self.lstm_fragment_length) + i) for i in range(self.lstm_fragment_length)], axis = 0)
+                fragment_indice_list = [((shuffled_fragments.unsqueeze(1) * self.lstm_fragment_length) + i) for i in range(self.lstm_fragment_length)]
+                shuffled_indices = torch.cat(fragment_indice_list, axis = 1).flatten()
 
                 #get actions and normalized advantages for this minibatch
                 minibatch_act = torch.Tensor(act[shuffled_indices]).to(self.device)
@@ -303,100 +306,3 @@ class lstm_agent(nn.Module):
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
-
-device = "cuda:0"
-ITERATIONS = 1000000
-agent = lstm_agent(512, device)
-
-arm_weapons = ["Talons", "BloodClaws", "Cleavers", "Cripplers", "Pistol", "Magnum", "Blaster"]
-misc_weapons = ["FrogLegs", "IronBubblegum", "HeliumBubblegum", "Shell", "Trombone"]
-tail_weapons = ["HealingGland", "VampireGland", "ParalyzingDart"]
-
-n_arenas = 80
-random_configs = [{"slots": [random.choice(arm_weapons), random.choice(misc_weapons), random.choice(tail_weapons)]} for i in range(3 * n_arenas // 2)]
-env = DerkEnv(n_arenas = n_arenas, turbo_mode = True, reward_function = win_loss_reward_function, home_team = random_configs, away_team = random_configs)
-
-save_model_every = 100
-eval_against_gap = 100
-past_models = []
-
-model_checkpoint_schedule = [int(i ** 1.5) for i in range(1000)]
-save_folder = "checkpoints/PPO-LSTM-" + str(time.time())
-os.mkdir(save_folder)
-
-for iteration in range(ITERATIONS):
-    print("\n-----------------------------ITERATION " + str(iteration) + "-----------------------------")
-
-    if iteration % save_model_every == 0:
-        past_models.append(copy.deepcopy(agent))
-
-    if iteration in model_checkpoint_schedule:
-        torch.save(agent.state_dict(), save_folder + "/" + str(iteration))
-
-    observation = []
-    done = []
-    action = []
-    reward = []
-    state = None
-
-    #picks past agents spaced further apart based on how far into training you are
-    past_selve_indices = [(int(iteration - (i * (iteration ** 0.7))) // save_model_every) for i in range(4)]
-
-    observation_n = env.reset()
-    while True:
-        action_n, state = agent.get_action(observation_n, state)
-
-        #act in environment and observe the new obervation and reward (done tells you if episode is over)
-        observation_n, reward_n, done_n, _ = env.step(action_n)
-
-        #collect experience data to learn from
-        observation.append(observation_n)
-        reward.append(reward_n)
-        done.append(done_n)
-        action.append(action_n)
-
-        if all(done_n):
-          break
-
-    # reshapes all collected data to [episode num, timestep]
-    observation = np.swapaxes(np.array(observation), 0, 1)
-    reward = np.swapaxes(np.array(reward), 0, 1)
-    done = np.swapaxes(np.array(done), 0, 1)
-    action = np.swapaxes(np.array(action), 0, 1)
-
-    #learn from experience
-    print("Training with PPO")
-    agent.update(observation, action, reward)
-
-    if iteration % 2 == 0:
-        testing_against = max(0, (iteration - eval_against_gap) // save_model_every)
-        if iteration % 4 == 0:
-            testing_against = 0
-        print("\nEvaluating against iteration ", testing_against * save_model_every)
-
-        curr_agent_state = None
-        past_agent_state = None
-
-        observation_n = env.reset()
-        while True:
-            #get actions for agent (first half of observations) and random agent (second half of observations)
-            agent_action_n, curr_agent_state = agent.get_action(observation_n[:env.n_agents//2], curr_agent_state)
-            past_action_n, past_agent_state = past_models[testing_against].get_action(observation_n[env.n_agents//2:], past_agent_state)
-            action_n = agent_action_n.tolist() + past_action_n.tolist()
-
-            #act in environment and observe the new obervation and reward (done tells you if episode is over)
-            observation_n, reward_n, done_n, _ = env.step(action_n)
-
-            if all(done_n):
-              total_home_reward = 0
-              total_away_reward = 0
-              for i in range(len(env.team_stats)//2):
-                total_home_reward += env.team_stats[i][0]
-                total_away_reward += env.team_stats[i][1]
-              total_home_reward /= (len(env.team_stats)//2)
-              total_away_reward /= (len(env.team_stats)//2)
-
-              print("Agent avg reward:", total_home_reward, " Iteration", testing_against * save_model_every ,"reward:", total_away_reward)
-              break
-
-env.close()
