@@ -120,6 +120,27 @@ def get_discrete_perturb_explore(perturbation_factor: float = 0.2, minimum: int 
 
   return discrete_perturb_explore
 
+def get_list_explore(exploration_list: List[any]) -> Callable[[any], any]:
+  """Get a list exploration method for the provided list.
+
+  Args:
+      exploration_list (List[any]): The list to explore.
+
+  Returns:
+      Callable[[any], any]: Returns the exploration function for the provided list.
+  """
+  
+  def list_explore(value: any) -> any:
+    element_index = exploration_list.index(value)
+    if bool(pyrandom.getrandbits(1)):
+      element_index = max(0, element_index - 1)
+    else:
+      element_index = min(len(exploration_list) - 1, element_index + 1)
+    
+    return exploration_list[element_index]
+
+  return list_explore
+
 def pbt_update_all(agents_and_rewards: List[Tuple[PBTAgent, float, bool]], exploit_methods: Dict[str, Callable[[any], any]], explore_methods: Dict[str, Callable[[any], any]], exploit_portion: float = 0.4) -> List[int]:
   """Update the PBT agents using the accumulated rewards as a judgement of fitness. The top agents
   based on cumulative reward that are in the exploit portion are exploited by the agents that are not
