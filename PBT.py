@@ -7,6 +7,8 @@ import numpy as np
 from numpy import random
 from math import floor, ceil
 import random as pyrandom
+import json
+from os import path
 
 class PBTAgent(ABC, nn.Module):
   @abstractmethod
@@ -209,3 +211,35 @@ def pbt_update_bottom(agents_and_rewards: List[Tuple[PBTAgent, float, bool]], ex
     agents_and_rewards[agent_index][0].explore(explore_methods)
 
   return exploiter_agents_indices
+
+def update_hyperparameter_history(history_file_path: str, agents: List[Tuple[PBTAgent, bool]], epoch_num: int) -> None:
+  """Records the current hyperparameters of the agents into a file at the desired path.
+
+  The file is a JSON file and is in the format of a list of dictionaries, where each dictionary
+  corresponds to an agent (in the order they are provided). Each dictionary contains keys
+  pertaining to the epoch number of the update and the hyperparameters of that agent at that
+  epoch number.
+
+  Args:
+      history_file_path (str): The path to the history file.
+      agents (List[Tuple[PBTAgent, bool]]): A list of tuples of the agents and whether or not to
+        record their hyperparameters.
+      epoch_num (int): The epoch number.
+  """
+  if not any([x[1] for x in agents]):
+    return
+
+  if not path.exists(history_file_path):
+    existing_history = [{}] * len(agents)
+  else:
+    with open(history_file_path, "r") as history_file:
+      existing_history = json.load(history_file)
+  
+  for index, (agent, needs_update) in enumerate(agents):
+    if not needs_update:
+      continue
+
+    existing_history[index][epoch_num] = agent.get_hyperparams()
+
+  with open(history_file_path, "w") as history_file:
+    history_file.write(json.dumps(existing_history))

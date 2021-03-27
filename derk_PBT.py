@@ -77,12 +77,12 @@ arm_weapons = ["Talons", "BloodClaws", "Cleavers", "Cripplers", "Pistol", "Magnu
 misc_weapons = ["FrogLegs", "IronBubblegum", "HeliumBubblegum", "Shell", "Trombone"]
 tail_weapons = ["HealingGland", "VampireGland", "ParalyzingDart"]
 
-n_arenas = 320
+n_arenas = 80
 random_configs = [{"slots": [random.choice(arm_weapons), random.choice(misc_weapons), random.choice(tail_weapons)]} for i in range(3 * n_arenas // 2)]
 env = DerkEnv(n_arenas = n_arenas, turbo_mode = True, reward_function = win_loss_reward_function, home_team = random_configs, away_team = random_configs)
 
 # PBT Parameters
-population_size = 20
+population_size = 10
 pbt_min_iterations = 10
 # Define which hyperparameters to exploit and how to copy the values.
 exploit_methods = {
@@ -111,6 +111,11 @@ last_PBT_update = [0] * len(population)
 model_checkpoint_schedule = [2*int(i ** 1.6) for i in range(1000)]
 save_folder = "checkpoints/PPO-LSTM-PBT" + str(time.time())
 os.makedirs(save_folder)
+
+hyperparam_history_save_file = os.path.join(save_folder, 'hyperparam_history.json')
+
+# Record the initial hyperparameter configuration of all agents.
+update_hyperparameter_history(hyperparam_history_save_file, list(zip(population, [True] * len(population))), 0)
 
 for iteration in range(ITERATIONS):
     print("\n-----------------------------ITERATION " + str(iteration) + "-----------------------------")
@@ -174,5 +179,7 @@ for iteration in range(ITERATIONS):
             last_PBT_update[updated_agent_index] = iteration
 
         print("Completed PBT update for {} agents".format(len(updated_agents)))
+
+        update_hyperparameter_history(hyperparam_history_save_file, list(zip(population, [x in updated_agents for x in range(len(population))])), iteration)
 
 env.close()
