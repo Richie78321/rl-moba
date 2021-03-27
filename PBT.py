@@ -82,6 +82,44 @@ def get_perturb_explore(perturbation_factor: float = 0.2) -> Callable[[float], f
 
   return perturb_explore
 
+def get_discrete_perturb_explore(perturbation_factor: float = 0.2, minimum: int = 0, maximum: int = -1) -> Callable[[int], int]:
+  """Get a discrete perturb exploration method using the given perturbation factor.
+
+  When perturbing down, the floor of the value is used. When perturbing up, the ceiling of the value
+  is used. This means that any perturbation is guaranteed to change the discreet value, as long as
+  the perturbation factor is not equal to zero.
+
+  Args:
+      perturbation_factor (float, optional): 1 plus or minus this factor is multiplied onto
+        the value. Defaults to 0.2.
+      minimum (int, optional): The minimum discrete value. Cannot be negative. Defaults to 0.
+      maximum (int, optional): The maximum discrete value. Defaults to unbounded (represented as -1).
+
+  Returns:
+      Callable[[int], int]: Returns the discrete perturbation exploration function for this
+        perturbation factor.
+  """
+
+  if minimum < 0:
+    raise ValueError("The minimum value cannot be less than zero.")
+  
+  if maximum != -1 and minimum >= maximum:
+    raise ValueError("The minimum value cannot be greater than or equal to the maximum value.")
+
+  def discrete_perturb_explore(value: int) -> int:
+    if bool(pyrandom.getrandbits(1)):
+      value *= 1 - perturbation_factor
+      value = max(minimum, floor(value))
+    else:
+      value *= 1 + perturbation_factor
+      value = ceil(value)
+      if maximum != -1:
+        value = min(maximum, value)
+
+    return value
+
+  return discrete_perturb_explore
+
 def pbt_update_all(agents_and_rewards: List[Tuple[PBTAgent, float, bool]], exploit_methods: Dict[str, Callable[[any], any]], explore_methods: Dict[str, Callable[[any], any]], exploit_portion: float = 0.4) -> List[int]:
   """Update the PBT agents using the accumulated rewards as a judgement of fitness. The top agents
   based on cumulative reward that are in the exploit portion are exploited by the agents that are not
