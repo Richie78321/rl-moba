@@ -298,7 +298,7 @@ class lstm_agent(PBTAgent):
 
                 #subset of shuffled indices to use in this minibatch
                 shuffled_fragments = shuffled[minibatch_num*self.fragments_per_batch:(minibatch_num+1)*self.fragments_per_batch]
-                fragment_indice_list = [((shuffled_fragments.unsqueeze(1) * self.lstm_fragment_length) + i) for i in range(self.lstm_fragment_length)]
+                fragment_indice_list = [((shuffled_fragments.unsqueeze(1) * self.hyperparams["lstm_fragment_length"]) + i) for i in range(self.hyperparams["lstm_fragment_length"])]
                 shuffled_indices = torch.cat(fragment_indice_list, axis = 1).flatten()
 
                 #get actions and normalized advantages for this minibatch
@@ -347,12 +347,12 @@ arm_weapons = ["Talons", "BloodClaws", "Cleavers", "Cripplers", "Pistol", "Magnu
 misc_weapons = ["FrogLegs", "IronBubblegum", "HeliumBubblegum", "Shell", "Trombone"]
 tail_weapons = ["HealingGland", "VampireGland", "ParalyzingDart"]
 
-n_arenas = 80
+n_arenas = 320
 random_configs = [{"slots": [random.choice(arm_weapons), random.choice(misc_weapons), random.choice(tail_weapons)]} for i in range(3 * n_arenas // 2)]
 env = DerkEnv(n_arenas = n_arenas, turbo_mode = True, reward_function = win_loss_reward_function, home_team = random_configs, away_team = random_configs)
 
 # PBT Parameters
-population_size = 10
+population_size = 20
 pbt_min_iterations = 10
 # Define which hyperparameters to exploit and how to copy the values.
 exploit_methods = {
@@ -371,9 +371,9 @@ explore_methods = {
 teams_per_member = (env.n_agents // 3) // population_size
 # Initialize population with uniformly distributed hyperparameters.
 population = [lstm_agent(512, device, hyperparams={
-    'learning_rate': np.random.uniform(0.0001, 0.01),
+    'learning_rate': np.random.uniform(0.01, 0.1),
     'entropy_coeff': np.random.uniform(0.001, 0.1),
-    'value_coeff': np.random.uniform(0.25, 1)
+    'value_coeff': np.random.uniform(0.5, 1.5)
 }) for i in range(population_size)]
 # Record the last PBT update
 last_PBT_update = [0] * len(population)
