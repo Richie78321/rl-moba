@@ -9,50 +9,56 @@ import os
 import random
 from tqdm import tqdm
 from torch_truncnorm.TruncatedNormal import TruncatedNormal
+from PBT import *
 
-class lstm_agent(nn.Module):
-    def __init__(self, lstm_size, device, activation = nn.Tanh()):
+class lstm_agent(PBTAgent):
+    def __init__(self, lstm_size, device, activation = nn.Tanh(), hyperparams = {}):
         super().__init__()
         self.device = device
 
         #### HYPERPARAMETERS ####
-
-        self.learning_rate = 5e-5
-        self.lr_decay = 0.9995 #exponential decay of learning rate
-        # discount factor, measure of how much you care about rewards in the future vs now
-        # should probably be 1.0 for pure win-loss rewards
-        self.gamma = 1.0
-        # whether or not to use Generalized Advantage Estimation (GAE). Allows a flexible tradeoff
-        # between bias (value predictions) and variance (true returns), but requires
-        # training the value network
-        self.use_gae = True
-        # we only train value network and use lambda param if we are using GAE
-        if self.use_gae:
+        default_hyperparams = {
+            "learning_rate": 2e-3,
+            # discount factor, measure of how much you care about rewards in the future vs now
+            # should probably be 1.0 for pure win-loss rewards
+            "gamma": 1.0,
+            # whether or not to use Generalized Advantage Estimation (GAE). Allows a flexible tradeoff
+            # between bias (value predictions) and variance (true returns), but requires
+            # training the value network
+            "use_gae": True,
             # lambda param for GAE estimation, defines the tradeoff between bias
             # (using the value function) and variance (using actual returns)
-            self.lamda = 0.95
+            "lambda": 0.96,
             # how much to optimize the value function, too much interferes with policy
             # leaning, too little and value function won't be accurate
-            self.value_coeff = 1.0
-        else:
+            "value_coeff": 0.5,
+            # fragment size determines how many sequential steps we chunk experience into
+            # larger size allows more flow of gradients back in time but makes batches less diverse
+            # must be a factor of 150 or else some experience will be cut off
+            "lstm_fragment_length": 15,
+            #how many times to loop over the entire batch of experience
+            "epochs_per_update": 2,
+            # how often to recompute hidden states and advantages. Expensive but allows more accurate training
+            "recompute_every": 20,
+            # defines size of trust region, smaller generally means more stable but slower learning
+            "eps_clip": 0.2,
+            # how much to optimize for entropy, prevents policy collapse by keeping some randomness for exploration
+            "entropy_coeff": 0.01,
+        }
+
+        self.hyperparams = hyperparams.copy()
+        for hyperparam_key in default_hyperparams.keys():
+            if hyperparam_key not in hyperparams:
+                self.hyperparams[hyperparam_key] = default_hyperparams[hyperparam_key]
+
+        if not self.hyperparams["use_gae"]:
             #if not using value network, don't train it and set lambda decay = 1.0
-            self.lamda = 1.0
-            self.value_coeff = 0.0
-        # fragment size determines how many sequential steps we chunk experience into
-        # larger size allows more flow of gradients back in time but makes batches less diverse
-        # must be a factor of 150 or else some experience will be cut off
-        self.lstm_fragment_length = 15
+            self.hyperparams["lambda"] = 1.0
+            self.hyperparams["value_coeff"] = 0.0
+
         #batch size in fragments
-        self.fragments_per_batch = 900 // self.lstm_fragment_length
-        #how many times to loop over the entire batch of experience
-        self.epochs_per_update = 2
-        # how often to recompute hidden states and advantages. Expensive but allows more accurate training
-        self.recompute_every = 20
-        # defines size of trust region, smaller generally means more stable but slower learning
-        self.eps_clip = 0.2
-        # how much to optimize for entropy, prevents policy collapse by keeping some randomness for exploration
-        self.entropy_coeff = 0.04
-        self.entropy_coeff_decay = 0.9995
+        self.fragments_per_batch = 900 // self.hyperparams["lstm_fragment_length"]
+
         # whether to treat each component of an action as independent or not.
         # by default this should be set to False
         self.independent_action_components = False
@@ -73,9 +79,40 @@ class lstm_agent(nn.Module):
 
         self.value_head = nn.Linear(lstm_size, 1)
 
-        self.optimizer = torch.optim.Adam(self.parameters(), lr = self.learning_rate)
-        self.lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer = self.optimizer, gamma = self.lr_decay)
+        self.optimizer = torch.optim.Adam(self.parameters(), lr = self.hyperparams["learning_rate"])
+
         self.to(self.device)
+
+    def get_hyperparams(self):
+        return self.hyperparams
+
+    def update_hyperparams(self, hyperparams_changed, evoke_update_event):
+        if evoke_update_event:
+            # Print the change in hyperparameters.
+            print("Agent hyperparameters changed. Original:")
+            hyperparams_changing = {}
+            for changed_key in hyperparams_changed.keys():
+                hyperparams_changing[changed_key] = self.hyperparams[changed_key]
+            print(hyperparams_changing)
+
+            print("New:")
+            print(hyperparams_changed)
+
+        for changed_key in hyperparams_changed.keys():
+            self.hyperparams[changed_key] = hyperparams_changed[changed_key]
+            
+        if evoke_update_event:
+            self.on_hyperparam_change(hyperparams_changed.keys())
+
+    def on_hyperparam_change(self, hyperparams_changed):
+        """To be run every time the hyperparameters of the model change.
+
+        Args:
+            hyperparams_changed (List[str]): A list of the keys of the hyperparameters changed.
+        """
+        if "learning_rate" in hyperparams_changed:
+            # TODO: Consider the implications of resetting the internal optimizer state.
+            self.optimizer = torch.optim.Adam(self.parameters(), lr = self.hyperparams["learning_rate"])
 
     def forward(self, obs, state):
         if len(obs.shape) < 3:
@@ -135,7 +172,7 @@ class lstm_agent(nn.Module):
     def calc_GAE(self, reward, value):
         value = np.concatenate((value, np.zeros(reward.shape[0]).reshape(-1, 1)), axis = 1)
 
-        TD_errors = reward + self.gamma * value[:,1:] - value[:,:-1]
+        TD_errors = reward + self.hyperparams['gamma'] * value[:,1:] - value[:,:-1]
 
         advantages = np.zeros(reward.size)
         for i in range(TD_errors.shape[0]):
@@ -143,43 +180,38 @@ class lstm_agent(nn.Module):
             for j in range(TD_errors.shape[1]):
                 gae += TD_errors[i, TD_errors.shape[1] - j - 1]
                 advantages[i*TD_errors.shape[1] + TD_errors.shape[1] - j - 1] = gae
-                gae *= self.gamma * self.lamda
+                gae *= self.hyperparams['gamma'] * self.hyperparams['lambda']
 
         return advantages
 
     def update(self, obs, act, rew):
-        self.lr_scheduler.step() #decay learning rate one per iteration
-        self.entropy_coeff *= self.entropy_coeff_decay
-
         act = act.reshape(-1, act.shape[2]) #flatten actions
 
         continuous_means, discrete_output, _, _ = self(obs, None)
         original_log_prob_pi, entropy = self.get_action_info(continuous_means, discrete_output, torch.Tensor(act).to(self.device))
         original_log_prob_pi = original_log_prob_pi.detach()
 
-        print(continuous_means.std(axis=0).mean().item())
-
         print("Policy Entropy: ", entropy.mean(axis=0).detach().cpu().numpy().tolist())
         print("Policy Standev: ", self.logstd.exp().detach().cpu().numpy().tolist())
 
         #break observation into fragments
-        obs_fragmented = obs.reshape((obs.shape[0] * obs.shape[1]) // self.lstm_fragment_length, self.lstm_fragment_length, 64)
+        obs_fragmented = obs.reshape((obs.shape[0] * obs.shape[1]) // self.hyperparams["lstm_fragment_length"], self.hyperparams["lstm_fragment_length"], 64)
 
-        for epoch in range(self.epochs_per_update):
+        for epoch in range(self.hyperparams['epochs_per_update']):
             shuffled = torch.randperm(obs_fragmented.shape[0])
 
             print("\nTraining PPO epoch", epoch)
             for minibatch_num in tqdm(range((obs_fragmented.shape[0]//self.fragments_per_batch) - 1)):
                 #recompute advantages and hidden states periodically to keep updates accurate
-                if minibatch_num % self.recompute_every == 0:
-                    _, _, frag_value, frag_state = self(obs[:, :self.lstm_fragment_length, :], None)
+                if minibatch_num % self.hyperparams['recompute_every'] == 0:
+                    _, _, frag_value, frag_state = self(obs[:, :self.hyperparams["lstm_fragment_length"], :], None)
 
                     #initial zeroed out states
                     state = [frag_state[0].detach().cpu() * 0, frag_state[1].detach().cpu() * 0]
 
-                    value = frag_value.reshape(-1, self.lstm_fragment_length).unsqueeze(1)
+                    value = frag_value.reshape(-1, self.hyperparams["lstm_fragment_length"]).unsqueeze(1)
 
-                    for i in range((150 // self.lstm_fragment_length) - 1):
+                    for i in range((150 // self.hyperparams["lstm_fragment_length"]) - 1):
                         #concatenate next fragment batch of states
                         #written before getting new one because we don't care about
                         #the last hidden state and put in an extra 0s state above
@@ -187,17 +219,17 @@ class lstm_agent(nn.Module):
                         state[1] = torch.cat((state[1], frag_state[1].detach().cpu()), axis = 0)
 
                         #get value and hidden states for next batch of fragments
-                        _, _, frag_value, frag_state = self(obs[:, self.lstm_fragment_length*(i+1):self.lstm_fragment_length*(i+2), :], frag_state)
+                        _, _, frag_value, frag_state = self(obs[:, self.hyperparams["lstm_fragment_length"]*(i+1):self.hyperparams["lstm_fragment_length"]*(i+2), :], frag_state)
 
                         #concatenate next fragment batch of values
-                        value = torch.cat((value, frag_value.reshape(-1, self.lstm_fragment_length).unsqueeze(1)), axis = 1)
+                        value = torch.cat((value, frag_value.reshape(-1, self.hyperparams["lstm_fragment_length"]).unsqueeze(1)), axis = 1)
 
                     #reshape so that the states correspond to a flattened [episode num, timestep]
                     state[0] = torch.flatten(state[0].permute(1, 0, 2), end_dim = 1)
                     state[1] = torch.flatten(state[1].permute(1, 0, 2), end_dim = 1)
                     value = torch.flatten(value, start_dim = 1)
 
-                    if self.use_gae == False:
+                    if self.hyperparams["use_gae"] == False:
                         # calcualting GAE with lambda = 1.0 and value = 0 is the
                         # same as calcualting true returns
                         value *= 0
@@ -209,7 +241,7 @@ class lstm_agent(nn.Module):
 
                 #subset of shuffled indices to use in this minibatch
                 shuffled_fragments = shuffled[minibatch_num*self.fragments_per_batch:(minibatch_num+1)*self.fragments_per_batch]
-                fragment_indice_list = [((shuffled_fragments.unsqueeze(1) * self.lstm_fragment_length) + i) for i in range(self.lstm_fragment_length)]
+                fragment_indice_list = [((shuffled_fragments.unsqueeze(1) * self.hyperparams["lstm_fragment_length"]) + i) for i in range(self.hyperparams["lstm_fragment_length"])]
                 shuffled_indices = torch.cat(fragment_indice_list, axis = 1).flatten()
 
                 #get actions and normalized advantages for this minibatch
@@ -230,7 +262,7 @@ class lstm_agent(nn.Module):
                     ratio = torch.exp(clipped_log_ratio)
 
                     surrogate_loss1 = ratio * minibatch_norm_adv.unsqueeze(1)
-                    surrogate_loss2 = torch.clamp(ratio, 1 - self.eps_clip, 1 + self.eps_clip) * minibatch_norm_adv.unsqueeze(1)
+                    surrogate_loss2 = torch.clamp(ratio, 1 - self.hyperparams['eps_clip'], 1 + self.hyperparams['eps_clip']) * minibatch_norm_adv.unsqueeze(1)
                 else:
                     log_ratio = curr_logprob_pi.sum(axis=1) - original_log_prob_pi[shuffled_indices].sum(axis=1)
 
@@ -239,12 +271,12 @@ class lstm_agent(nn.Module):
                     ratio = torch.exp(clipped_log_ratio)
 
                     surrogate_loss1 = ratio * minibatch_norm_adv
-                    surrogate_loss2 = torch.clamp(ratio, 1 - self.eps_clip, 1 + self.eps_clip) * minibatch_norm_adv
+                    surrogate_loss2 = torch.clamp(ratio, 1 - self.hyperparams['eps_clip'], 1 + self.hyperparams['eps_clip']) * minibatch_norm_adv
 
                 #loss for the value function
                 value_loss = torch.pow(value - torch.Tensor(value_targets[shuffled_indices]).to(self.device), 2)
 
-                loss = -torch.min(surrogate_loss1, surrogate_loss2).mean() - self.entropy_coeff * entropy.mean() + self.value_coeff * value_loss.mean()
+                loss = -torch.min(surrogate_loss1, surrogate_loss2).mean() - self.hyperparams['entropy_coeff'] * entropy.mean() + self.hyperparams['value_coeff'] * value_loss.mean()
 
                 self.optimizer.zero_grad()
                 loss.backward()
