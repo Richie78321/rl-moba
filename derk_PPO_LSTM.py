@@ -43,7 +43,8 @@ class lstm_agent(PBTAgent):
             # defines size of trust region, smaller generally means more stable but slower learning
             "eps_clip": 0.2,
             # how much to optimize for entropy, prevents policy collapse by keeping some randomness for exploration
-            "entropy_coeff": 0.01,
+            "discrete_entropy_coeff": 0.5,
+            "continuous_entropy_coeff": 0.02,
         }
 
         self.hyperparams = hyperparams.copy()
@@ -275,8 +276,10 @@ class lstm_agent(PBTAgent):
 
                 #loss for the value function
                 value_loss = torch.pow(value - torch.Tensor(value_targets[shuffled_indices]).to(self.device), 2)
+                
+                entropy_loss = self.hyperparams['continuous_entropy_coeff'] * entropy[:,:3].mean() + self.hyperparams['discrete_entropy_coeff'] * entropy[:,3:].mean()
 
-                loss = -torch.min(surrogate_loss1, surrogate_loss2).mean() - self.hyperparams['entropy_coeff'] * entropy.mean() + self.hyperparams['value_coeff'] * value_loss.mean()
+                loss = -torch.min(surrogate_loss1, surrogate_loss2).mean() - entropy_loss + self.hyperparams['value_coeff'] * value_loss.mean()
 
                 self.optimizer.zero_grad()
                 loss.backward()
