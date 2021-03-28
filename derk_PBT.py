@@ -11,63 +11,7 @@ from torch_truncnorm.TruncatedNormal import TruncatedNormal
 import random
 from PBT import *
 from derk_PPO_LSTM import lstm_agent
-
-torch.autograd.set_detect_anomaly(True)
-
-shaped_reward_function = {
-    "damageEnemyStatue":  0.01,
-    "damageEnemyUnit":  0.01,
-    "killEnemyStatue": 0.1,
-    "killEnemyUnit":  0.02,
-    "healFriendlyStatue":  0.02,
-    "healTeammate1": 0.01,
-    "healTeammate2":  0.01,
-    "timeSpentHomeBase": 0,
-    "timeSpentHomeTerritory": 0,
-    "timeSpentAwayTerritory": 0,
-    "timeSpentAwayBase": 0,
-    "damageTaken": - 0.01,
-    "friendlyFire": - 0.01,
-    "healEnemy": - 0.01,
-    "fallDamageTaken": -.1,
-    "statueDamageTaken": - 0.04,
-    "manualBonus": 0,
-    "victory": 2,
-    "loss": -2,
-    "tie": 0,
-    "teamSpirit": 0.3,
-    "timeScaling": 1.0,
-}
-
-win_loss_reward_function = {
-    "damageEnemyStatue": 0,
-    "damageEnemyUnit": 0,
-    "killEnemyStatue": 0,
-    "killEnemyUnit": 0,
-    "healFriendlyStatue": 0.,
-    "healTeammate1": 0,
-    "healTeammate2": 0,
-    "timeSpentHomeBase": 0,
-    "timeSpentHomeTerritory": 0,
-    "timeSpentAwayTerritory": 0,
-    "timeSpentAwayBase": 0,
-    "damageTaken": 0,
-    "friendlyFire": 0,
-    "healEnemy": 0,
-    "fallDamageTaken": 0,
-    "statueDamageTaken": 0,
-    "manualBonus": 0,
-    "victory": 0.3333333333333,
-    "loss": 0,
-    "tie": 0.16666666666666,
-    "teamSpirit": 1.0,
-    "timeScaling": 1.0,
-}
-
-classes_team_config = [
-      { 'primaryColor': '#ff00ff', 'slots': ['Talons', 'FrogLegs', 'ParalyzingDart'] },
-      { 'primaryColor': '#00ff00', 'slots': ['Magnum', 'Trombone', 'VampireGland'] },
-      { 'primaryColor': '#ff0000', 'slots': ['Cripplers', 'IronBubblegum', 'HealingGland'] }]
+from reward_functions import *
 
 device = "cuda:0"
 ITERATIONS = 1000000
@@ -77,33 +21,41 @@ arm_weapons = ["Talons", "BloodClaws", "Cleavers", "Cripplers", "Pistol", "Magnu
 misc_weapons = ["FrogLegs", "IronBubblegum", "HeliumBubblegum", "Shell", "Trombone"]
 tail_weapons = ["HealingGland", "VampireGland", "ParalyzingDart"]
 
-n_arenas = 80
+n_arenas = 800
 random_configs = [{"slots": [random.choice(arm_weapons), random.choice(misc_weapons), random.choice(tail_weapons)]} for i in range(3 * n_arenas // 2)]
 env = DerkEnv(n_arenas = n_arenas, turbo_mode = True, reward_function = win_loss_reward_function, home_team = random_configs, away_team = random_configs)
 
 # PBT Parameters
-population_size = 10
+population_size = 20
 pbt_min_iterations = 10
 # Define which hyperparameters to exploit and how to copy the values.
 exploit_methods = {
     'learning_rate': lambda x: x,
-    'entropy_coeff': lambda x: x,
+    'discrete_entropy_coeff': lambda x: x,
+    'continuous_entropy_coeff': lambda x: x,
     'value_coeff': lambda x: x,
+    'fragments_per_batch': lambda x: x,
 }
 # Define which hyperparameters to explore and how to.
 perturb_explore = get_perturb_explore()
+discrete_perturb_explore = get_discrete_perturb_explore()
+
 explore_methods = {
     'learning_rate': perturb_explore,
-    'entropy_coeff': perturb_explore,
+    'discrete_entropy_coeff': perturb_explore,
+    'continuous_entropy_coeff': perturb_explore,
     'value_coeff': perturb_explore,
+    'fragments_per_batch': discrete_perturb_explore,
 }
 
 teams_per_member = (env.n_agents // 3) // population_size
 # Initialize population with uniformly distributed hyperparameters.
 population = [lstm_agent(512, device, hyperparams={
-    'learning_rate': np.random.uniform(0.01, 0.1),
-    'entropy_coeff': np.random.uniform(0.001, 0.1),
-    'value_coeff': np.random.uniform(0.5, 1.5)
+    'learning_rate': np.random.uniform(5e-5, 5e-2),
+    'discrete_entropy_coeff': np.random.uniform(0.001, 1.0),
+    'continuous_entropy_coeff': np.random.uniform(0.0001, 0.1),
+    'value_coeff': np.random.uniform(0.1, 1.5),
+    'fragments_per_batch': np.random.randint(low = 10, high = 200),
 }) for i in range(population_size)]
 # Record the last PBT update
 last_PBT_update = [0] * len(population)

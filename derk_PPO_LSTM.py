@@ -36,6 +36,8 @@ class lstm_agent(PBTAgent):
             # larger size allows more flow of gradients back in time but makes batches less diverse
             # must be a factor of 150 or else some experience will be cut off
             "lstm_fragment_length": 15,
+            #batch size in fragments
+            "fragments_per_batch": 60,
             #how many times to loop over the entire batch of experience
             "epochs_per_update": 2,
             # how often to recompute hidden states and advantages. Expensive but allows more accurate training
@@ -56,9 +58,6 @@ class lstm_agent(PBTAgent):
             #if not using value network, don't train it and set lambda decay = 1.0
             self.hyperparams["lambda"] = 1.0
             self.hyperparams["value_coeff"] = 0.0
-
-        #batch size in fragments
-        self.fragments_per_batch = 900 // self.hyperparams["lstm_fragment_length"]
 
         # whether to treat each component of an action as independent or not.
         # by default this should be set to False
@@ -101,7 +100,7 @@ class lstm_agent(PBTAgent):
 
         for changed_key in hyperparams_changed.keys():
             self.hyperparams[changed_key] = hyperparams_changed[changed_key]
-            
+
         if evoke_update_event:
             self.on_hyperparam_change(hyperparams_changed.keys())
 
@@ -202,7 +201,7 @@ class lstm_agent(PBTAgent):
             shuffled = torch.randperm(obs_fragmented.shape[0])
 
             print("\nTraining PPO epoch", epoch)
-            for minibatch_num in tqdm(range((obs_fragmented.shape[0]//self.fragments_per_batch) - 1)):
+            for minibatch_num in tqdm(range((obs_fragmented.shape[0]//self.hyperparams["fragments_per_batch"]) - 1)):
                 #recompute advantages and hidden states periodically to keep updates accurate
                 if minibatch_num % self.hyperparams['recompute_every'] == 0:
                     _, _, frag_value, frag_state = self(obs[:, :self.hyperparams["lstm_fragment_length"], :], None)
@@ -241,7 +240,7 @@ class lstm_agent(PBTAgent):
                     norm_adv = (adv - adv.mean()) / (adv.std() + 1e-8)
 
                 #subset of shuffled indices to use in this minibatch
-                shuffled_fragments = shuffled[minibatch_num*self.fragments_per_batch:(minibatch_num+1)*self.fragments_per_batch]
+                shuffled_fragments = shuffled[minibatch_num*self.hyperparams["fragments_per_batch"]:(minibatch_num+1)*self.hyperparams["fragments_per_batch"]]
                 fragment_indice_list = [((shuffled_fragments.unsqueeze(1) * self.hyperparams["lstm_fragment_length"]) + i) for i in range(self.hyperparams["lstm_fragment_length"])]
                 shuffled_indices = torch.cat(fragment_indice_list, axis = 1).flatten()
 
@@ -276,7 +275,7 @@ class lstm_agent(PBTAgent):
 
                 #loss for the value function
                 value_loss = torch.pow(value - torch.Tensor(value_targets[shuffled_indices]).to(self.device), 2)
-                
+
                 entropy_loss = self.hyperparams['continuous_entropy_coeff'] * entropy[:,:3].mean() + self.hyperparams['discrete_entropy_coeff'] * entropy[:,3:].mean()
 
                 loss = -torch.min(surrogate_loss1, surrogate_loss2).mean() - entropy_loss + self.hyperparams['value_coeff'] * value_loss.mean()
