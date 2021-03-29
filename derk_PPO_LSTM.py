@@ -7,6 +7,7 @@ import copy
 import time
 import os
 import random
+from math import ceil
 from tqdm import tqdm
 from torch_truncnorm.TruncatedNormal import TruncatedNormal
 from PBT import *
@@ -28,7 +29,7 @@ class lstm_agent(PBTAgent):
             "use_gae": True,
             # lambda param for GAE estimation, defines the tradeoff between bias
             # (using the value function) and variance (using actual returns)
-            "lambda": 0.96,
+            "lambda": 0.99,
             # how much to optimize the value function, too much interferes with policy
             # leaning, too little and value function won't be accurate
             "value_coeff": 0.5,
@@ -36,17 +37,17 @@ class lstm_agent(PBTAgent):
             # larger size allows more flow of gradients back in time but makes batches less diverse
             # must be a factor of 150 or else some experience will be cut off
             "lstm_fragment_length": 15,
-            #batch size in fragments
-            "fragments_per_batch": 60,
+            #minibatch size (will be rounded up to nearest multiple of lstm_fragment_length)
+            "minibatch_size": 900,
             #how many times to loop over the entire batch of experience
             "epochs_per_update": 2,
             # how often to recompute hidden states and advantages. Expensive but allows more accurate training
-            "recompute_every": 20,
+            "recompute_every": 10000,
             # defines size of trust region, smaller generally means more stable but slower learning
             "eps_clip": 0.2,
             # how much to optimize for entropy, prevents policy collapse by keeping some randomness for exploration
-            "discrete_entropy_coeff": 0.5,
-            "continuous_entropy_coeff": 0.02,
+            "discrete_entropy_coeff": 1e-4,
+            "continuous_entropy_coeff": 1e-4,
         }
 
         self.hyperparams = hyperparams.copy()
@@ -63,13 +64,18 @@ class lstm_agent(PBTAgent):
         # by default this should be set to False
         self.independent_action_components = False
 
+        # The move and rotate actions are only executed in proportion to the chase
+        # action, so we multiply the gradients of move and rotate by this proportion
+        # by default this should be set to True
+        self.dependent_movement_actions = True
+
         #### ARCHITECTURE ####
 
         self.fc = nn.Sequential(nn.Linear(64, lstm_size), activation)
         self.lstm = nn.LSTM(lstm_size, lstm_size, batch_first = True)
 
         self.continuous_size = 3
-        self.logstd = nn.Parameter(torch.Tensor([0.693147, 0.693147, 0]))
+        self.logstd = nn.Parameter(torch.Tensor([0, 0, 0]))
         self.continuous_lower_bounds = torch.Tensor([-1, -1, 0]).to(self.device)
         self.continuous_upper_bounds = torch.Tensor([1, 1, 1]).to(self.device)
         self.continuous_action_head = nn.Sequential(activation, nn.Linear(lstm_size, self.continuous_size))
@@ -143,7 +149,7 @@ class lstm_agent(PBTAgent):
     def get_action(self, obs, state):
         continuous_means, discrete_output, _, state = self(obs, state)
 
-        truncNorm = TruncatedNormal(self.device, continuous_means, self.logstd.exp(), self.continuous_lower_bounds, self.continuous_upper_bounds)
+        truncNorm = TruncatedNormal(self.device, continuous_means, self.logstd.sigmoid(), self.continuous_lower_bounds, self.continuous_upper_bounds)
         actions = truncNorm.rsample().detach().cpu().numpy()
 
         for discrete_logits in discrete_output:
@@ -154,7 +160,7 @@ class lstm_agent(PBTAgent):
         return actions, state
 
     def get_action_info(self, continuous_means, discrete_output, actions_taken):
-        truncNorm = TruncatedNormal(self.device, continuous_means, self.logstd.exp(), self.continuous_lower_bounds, self.continuous_upper_bounds)
+        truncNorm = TruncatedNormal(self.device, continuous_means, self.logstd.sigmoid(), self.continuous_lower_bounds, self.continuous_upper_bounds)
         log_probs = truncNorm.log_prob(actions_taken[:,:self.continuous_size])
         entropy = truncNorm._entropy
 
@@ -186,13 +192,22 @@ class lstm_agent(PBTAgent):
 
     def update(self, obs, act, rew):
         act = act.reshape(-1, act.shape[2]) #flatten actions
+        #useful metric that will be used several times
+        fragments_per_batch = ceil(self.hyperparams["minibatch_size"] / self.hyperparams["lstm_fragment_length"])
+        minibatches_before_recompute = ceil(self.hyperparams["recompute_every"] / self.hyperparams["minibatch_size"])
 
         continuous_means, discrete_output, _, _ = self(obs, None)
         original_log_prob_pi, entropy = self.get_action_info(continuous_means, discrete_output, torch.Tensor(act).to(self.device))
         original_log_prob_pi = original_log_prob_pi.detach()
 
+        if self.dependent_movement_actions:
+            original_log_prob_pi[:,:2] *= (1 - torch.Tensor(act[:,2]).to(self.device).unsqueeze(1))
+
+        print(nn.functional.log_softmax(discrete_output[0], dim=1).exp().std(axis=0).cpu().detach().numpy().tolist())
+        print(nn.functional.log_softmax(discrete_output[1], dim=1).exp().std(axis=0).cpu().detach().numpy().tolist())
+
         print("Policy Entropy: ", entropy.mean(axis=0).detach().cpu().numpy().tolist())
-        print("Policy Standev: ", self.logstd.exp().detach().cpu().numpy().tolist())
+        print("Policy Standev: ", self.logstd.sigmoid().detach().cpu().numpy().tolist())
 
         #break observation into fragments
         obs_fragmented = obs.reshape((obs.shape[0] * obs.shape[1]) // self.hyperparams["lstm_fragment_length"], self.hyperparams["lstm_fragment_length"], 64)
@@ -201,9 +216,9 @@ class lstm_agent(PBTAgent):
             shuffled = torch.randperm(obs_fragmented.shape[0])
 
             print("\nTraining PPO epoch", epoch)
-            for minibatch_num in tqdm(range((obs_fragmented.shape[0]//self.hyperparams["fragments_per_batch"]) - 1)):
+            for minibatch_num in tqdm(range((obs_fragmented.shape[0]//fragments_per_batch) - 1)):
                 #recompute advantages and hidden states periodically to keep updates accurate
-                if minibatch_num % self.hyperparams['recompute_every'] == 0:
+                if minibatch_num % minibatches_before_recompute == 0:
                     _, _, frag_value, frag_state = self(obs[:, :self.hyperparams["lstm_fragment_length"], :], None)
 
                     #initial zeroed out states
@@ -240,7 +255,7 @@ class lstm_agent(PBTAgent):
                     norm_adv = (adv - adv.mean()) / (adv.std() + 1e-8)
 
                 #subset of shuffled indices to use in this minibatch
-                shuffled_fragments = shuffled[minibatch_num*self.hyperparams["fragments_per_batch"]:(minibatch_num+1)*self.hyperparams["fragments_per_batch"]]
+                shuffled_fragments = shuffled[minibatch_num*fragments_per_batch:(minibatch_num+1)*fragments_per_batch]
                 fragment_indice_list = [((shuffled_fragments.unsqueeze(1) * self.hyperparams["lstm_fragment_length"]) + i) for i in range(self.hyperparams["lstm_fragment_length"])]
                 shuffled_indices = torch.cat(fragment_indice_list, axis = 1).flatten()
 
@@ -252,6 +267,10 @@ class lstm_agent(PBTAgent):
                 minibatch_state = [state[0][shuffled_fragments].to(self.device), state[1][shuffled_fragments].to(self.device)]
                 continuous_means, discrete_output, value, _ = self(obs_fragmented[shuffled_fragments], minibatch_state)
                 curr_logprob_pi, entropy = self.get_action_info(continuous_means, discrete_output, minibatch_act)
+
+                if self.dependent_movement_actions:
+                    curr_logprob_pi[:,:2] *= (1 - minibatch_act[:,2].unsqueeze(1))
+                    entropy[:,:2] *= (1 - minibatch_act[:,2].unsqueeze(1))
 
                 #PPO clipped policy loss
                 if self.independent_action_components:
@@ -277,6 +296,7 @@ class lstm_agent(PBTAgent):
                 value_loss = torch.pow(value - torch.Tensor(value_targets[shuffled_indices]).to(self.device), 2)
 
                 entropy_loss = self.hyperparams['continuous_entropy_coeff'] * entropy[:,:3].mean() + self.hyperparams['discrete_entropy_coeff'] * entropy[:,3:].mean()
+                #inv_exp_entropy_loss = 1 / torch.exp((0.5 * entropy.sum(axis=1)).mean())
 
                 loss = -torch.min(surrogate_loss1, surrogate_loss2).mean() - entropy_loss + self.hyperparams['value_coeff'] * value_loss.mean()
 
