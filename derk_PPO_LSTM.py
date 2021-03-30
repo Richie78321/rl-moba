@@ -117,8 +117,9 @@ class lstm_agent(PBTAgent):
             hyperparams_changed (List[str]): A list of the keys of the hyperparameters changed.
         """
         if "learning_rate" in hyperparams_changed:
-            # TODO: Consider the implications of resetting the internal optimizer state.
-            self.optimizer = torch.optim.Adam(self.parameters(), lr = self.hyperparams["learning_rate"])
+            # https://stackoverflow.com/questions/48324152/pytorch-how-to-change-the-learning-rate-of-an-optimizer-at-any-given-moment-no
+            for g in self.optimizer.param_groups:
+                g['lr'] = self.hyperparams["learning_rate"]
 
     def forward(self, obs, state):
         if len(obs.shape) < 3:
