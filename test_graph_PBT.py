@@ -35,5 +35,10 @@ iteration_means = history_df.groupby('iteration').mean()
 print(iteration_means)
 
 iteration_means[['discrete_entropy_coeff', 'continuous_entropy_coeff']].plot(logy=True)
+plt.show()
 
+iteration_means[['minibatch_size']].plot(logy=True)
+plt.show()
+
+iteration_means[['lstm_fragment_length']].plot(logy=True)
 plt.show()

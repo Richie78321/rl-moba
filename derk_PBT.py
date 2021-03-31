@@ -26,7 +26,7 @@ random_configs = [{"slots": [random.choice(arm_weapons), random.choice(misc_weap
 env = DerkEnv(n_arenas = n_arenas, turbo_mode = True, reward_function = win_loss_reward_function, home_team = random_configs, away_team = random_configs)
 
 # PBT Parameters
-population_size = 20
+population_size = 40
 pbt_min_iterations = 10
 # Define which hyperparameters to exploit and how to copy the values.
 exploit_methods = {
@@ -56,10 +56,10 @@ teams_per_member = (env.n_agents // 3) // population_size
 # Initialize population with uniformly distributed hyperparameters.
 population = [lstm_agent(512, device, hyperparams={
     'learning_rate': 10 ** np.random.uniform(-5, -2),
-    'discrete_entropy_coeff': 10 ** np.random.uniform(-6, -3),
-    'continuous_entropy_coeff': 10 ** np.random.uniform(-6, -3),
+    'discrete_entropy_coeff': 10 ** np.random.uniform(-6, -4),
+    'continuous_entropy_coeff': 10 ** np.random.uniform(-6, -4),
     'value_coeff': 10 ** np.random.uniform(-1, 0.3),
-    'minibatch_size': int(10 ** np.random.uniform(2, 3.6)),
+    'minibatch_size': int(10 ** np.random.uniform(2, 3.5)),
     "lstm_fragment_length": int(random.choice(fragment_length_choices)),
 }) for i in range(population_size)]
 

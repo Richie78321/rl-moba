@@ -40,7 +40,7 @@ class lstm_agent(PBTAgent):
             #minibatch size (will be rounded up to nearest multiple of lstm_fragment_length)
             "minibatch_size": 900,
             #how many times to loop over the entire batch of experience
-            "epochs_per_update": 4,
+            "epochs_per_update": 2,
             # how often to recompute hidden states and advantages. Expensive but allows more accurate training
             "recompute_every": 10000,
             # defines size of trust region, smaller generally means more stable but slower learning
@@ -74,17 +74,14 @@ class lstm_agent(PBTAgent):
         self.fc = nn.Sequential(nn.Linear(64, lstm_size), activation)
         self.lstm = nn.LSTM(lstm_size, lstm_size, batch_first = True)
 
-        self.value_head = nn.Linear(lstm_size, 1)
-
-        self.focus_action_head = nn.Sequential(activation, nn.Linear(lstm_size, 8))
-        #All other heads will take in one hot encoding of the focus action
-        self.ability_action_head = nn.Sequential(activation, nn.Linear(lstm_size + 8, 4))
-
-        self.continuous_size = 3
-        self.logstd = nn.Parameter(torch.Tensor([0, 0, -0.6931471805]))
+        self.logstd = nn.Parameter(torch.Tensor([0, 0, 0]))
         self.continuous_lower_bounds = torch.Tensor([-1, -1, 0]).to(self.device)
         self.continuous_upper_bounds = torch.Tensor([1, 1, 1]).to(self.device)
-        self.continuous_action_head = nn.Sequential(activation, nn.Linear(lstm_size + 8, self.continuous_size))
+
+        self.continuous_action_head = nn.Sequential(activation, nn.Linear(lstm_size, 84))
+        self.discrete_action_head = nn.Sequential(activation, nn.Linear(lstm_size, 28))
+
+        self.value_head = nn.Linear(lstm_size, 1)
 
         self.optimizer = torch.optim.Adam(self.parameters(), lr = self.hyperparams["learning_rate"])
 
@@ -113,16 +110,15 @@ class lstm_agent(PBTAgent):
 
     def on_hyperparam_change(self, hyperparams_changed):
         """To be run every time the hyperparameters of the model change.
+
         Args:
             hyperparams_changed (List[str]): A list of the keys of the hyperparameters changed.
         """
         if "learning_rate" in hyperparams_changed:
-            # https://stackoverflow.com/questions/48324152/pytorch-how-to-change-the-learning-rate-of-an-optimizer-at-any-given-moment-no
-            for g in self.optimizer.param_groups:
-                g['lr'] = self.hyperparams["learning_rate"]
+            # TODO: Consider the implications of resetting the internal optimizer state.
+            self.optimizer = torch.optim.Adam(self.parameters(), lr = self.hyperparams["learning_rate"])
 
-
-    def forward(self, obs, state, actions_taken = None):
+    def forward(self, obs, state):
         if len(obs.shape) < 3:
             lstm_in = self.fc(torch.Tensor(obs).to(self.device)).unsqueeze(1)
         else:
@@ -138,51 +134,30 @@ class lstm_agent(PBTAgent):
 
         features = lstm_out.reshape(-1, lstm_out.shape[2]) #flattens batch and seq len dimension together
 
-        value = self.value_head(features)
-        focus_logits = self.focus_action_head(features)
-
-        if actions_taken is None:
-            focus_action = self.sample_discrete(focus_logits)
-        else:
-            focus_action = actions_taken[4].long()
-
-        one_hot_focus_action = torch.zeros((features.shape[0], 8)).to(self.device)
-        one_hot_focus_action[:, focus_action] = 1
-
-        features_focus = torch.cat([features, one_hot_focus_action], axis = 1)
-
-        ability_logits = self.ability_action_head(features_focus)
-        discrete_logits = [ability_logits, focus_logits]
-
-        continuous_vals = self.continuous_action_head(features_focus)
+        continuous_vals = self.continuous_action_head(features)
+        continuous_vals = continuous_vals.reshape(continuous_vals.shape[0], 3, 28)
         #bound action 0 and 1 between -1 and 1, bound action 2 between 0 and 1
         continuous_vals[:,0:2] = torch.tanh(continuous_vals[:,0:2])
         continuous_vals[:,2] = torch.sigmoid(continuous_vals[:,2])
 
-        if actions_taken is None:
-            ability_action = self.sample_discrete(ability_logits)
-            continuous_actions = self.sample_continuous(continuous_vals, self.logstd.exp())
-            action = torch.cat([continuous_actions, ability_action.reshape(-1,1), focus_action.reshape(-1,1)], axis = 1)
+        discrete_action = self.discrete_action_head(features)
+        value = self.value_head(features)
 
-            return continuous_vals, discrete_logits, value, state, action
-
-        return continuous_vals, discrete_logits, value, state
-
-    def sample_discrete(self, logits):
-        probs = nn.functional.log_softmax(logits, dim=1).exp()
-        return torch.multinomial(probs, num_samples = 1).flatten().detach()
-
-    def sample_continuous(self, means, stds):
-        truncNorm = TruncatedNormal(self.device, means, stds, self.continuous_lower_bounds, self.continuous_upper_bounds)
-        return truncNorm.rsample().detach()
+        return continuous_vals, discrete_action, value, state
 
     def get_action(self, obs, state):
-        _, _, _, state, actions = self(obs, state)
+        continuous_means, discrete_output, _, state = self(obs, state)
 
-        return actions.cpu().numpy(), state
+        discrete_probs = nn.functional.log_softmax(discrete_logits, dim=1).exp()
+        discrete_actions = torch.multinomial(discrete_probs, num_samples = 1).flatten().cpu().detach().numpy()
+
+        truncNorm = TruncatedNormal(self.device, continuous_means, self.logstd.sigmoid(), self.continuous_lower_bounds, self.continuous_upper_bounds)
+        actions = truncNorm.rsample().detach().cpu().numpy()
+
+        return actions, state
 
     def get_action_info(self, continuous_means, discrete_output, actions_taken):
-        truncNorm = TruncatedNormal(self.device, continuous_means, self.logstd.exp(), self.continuous_lower_bounds, self.continuous_upper_bounds)
+        truncNorm = TruncatedNormal(self.device, continuous_means, self.logstd.sigmoid(), self.continuous_lower_bounds, self.continuous_upper_bounds)
         log_probs = truncNorm.log_prob(actions_taken[:,:self.continuous_size])
         entropy = truncNorm._entropy
 
@@ -213,29 +188,23 @@ class lstm_agent(PBTAgent):
         return advantages
 
     def update(self, obs, act, rew):
-        act = torch.Tensor(act).to(self.device)
-        flattened_act = act.flatten(end_dim = 1) #flatten actions
+        act = act.reshape(-1, act.shape[2]) #flatten actions
         #useful metric that will be used several times
         fragments_per_batch = ceil(self.hyperparams["minibatch_size"] / self.hyperparams["lstm_fragment_length"])
         minibatches_before_recompute = ceil(self.hyperparams["recompute_every"] / self.hyperparams["minibatch_size"])
 
-        continuous_means, discrete_output, _, _ = self(obs, None, flattened_act)
-        original_log_prob_pi, entropy = self.get_action_info(continuous_means, discrete_output, flattened_act)
+        continuous_means, discrete_output, _, _ = self(obs, None)
+        original_log_prob_pi, entropy = self.get_action_info(continuous_means, discrete_output, torch.Tensor(act).to(self.device))
         original_log_prob_pi = original_log_prob_pi.detach()
 
         if self.dependent_movement_actions:
-            original_log_prob_pi[:,:2] *= (1 - flattened_act[:,2].unsqueeze(1))
+            original_log_prob_pi[:,:2] *= (1 - torch.Tensor(act[:,2]).to(self.device).unsqueeze(1))
 
-        #### DEBUGGING ####
-        continuous = continuous_means.std(axis=0)
-        discrete_var1 = nn.functional.log_softmax(discrete_output[0], dim=1).exp().std(axis=0).mean().item()
-        discrete_var2 = nn.functional.log_softmax(discrete_output[1], dim=1).exp().std(axis=0).mean().item()
-
-        print("Action STDs:", continuous[0].item(), continuous[1].item(), continuous[2].item(), discrete_var1, discrete_var2)
+        print(nn.functional.log_softmax(discrete_output[0], dim=1).exp().std(axis=0).cpu().detach().numpy().tolist())
+        print(nn.functional.log_softmax(discrete_output[1], dim=1).exp().std(axis=0).cpu().detach().numpy().tolist())
 
         print("Policy Entropy: ", entropy.mean(axis=0).detach().cpu().numpy().tolist())
-        print("Policy Standev: ", self.logstd.exp().detach().cpu().numpy().tolist())
-        #### DEBUGGING ####
+        print("Policy Standev: ", self.logstd.sigmoid().detach().cpu().numpy().tolist())
 
         #break observation into fragments
         obs_fragmented = obs.reshape((obs.shape[0] * obs.shape[1]) // self.hyperparams["lstm_fragment_length"], self.hyperparams["lstm_fragment_length"], 64)
@@ -247,9 +216,7 @@ class lstm_agent(PBTAgent):
             for minibatch_num in tqdm(range((obs_fragmented.shape[0]//fragments_per_batch) - 1)):
                 #recompute advantages and hidden states periodically to keep updates accurate
                 if minibatch_num % minibatches_before_recompute == 0:
-                    _, _, frag_value, frag_state = self(obs[:, :self.hyperparams["lstm_fragment_length"], :],
-                                                        None,
-                                                        act[:, :self.hyperparams["lstm_fragment_length"], :])
+                    _, _, frag_value, frag_state = self(obs[:, :self.hyperparams["lstm_fragment_length"], :], None)
 
                     #initial zeroed out states
                     state = [frag_state[0].detach().cpu() * 0, frag_state[1].detach().cpu() * 0]
@@ -264,9 +231,7 @@ class lstm_agent(PBTAgent):
                         state[1] = torch.cat((state[1], frag_state[1].detach().cpu()), axis = 0)
 
                         #get value and hidden states for next batch of fragments
-                        _, _, frag_value, frag_state = self(obs[:, self.hyperparams["lstm_fragment_length"]*(i+1):self.hyperparams["lstm_fragment_length"]*(i+2), :],
-                                                            frag_state,
-                                                            act[:, self.hyperparams["lstm_fragment_length"]*(i+1):self.hyperparams["lstm_fragment_length"]*(i+2), :])
+                        _, _, frag_value, frag_state = self(obs[:, self.hyperparams["lstm_fragment_length"]*(i+1):self.hyperparams["lstm_fragment_length"]*(i+2), :], frag_state)
 
                         #concatenate next fragment batch of values
                         value = torch.cat((value, frag_value.reshape(-1, self.hyperparams["lstm_fragment_length"]).unsqueeze(1)), axis = 1)
@@ -292,12 +257,12 @@ class lstm_agent(PBTAgent):
                 shuffled_indices = torch.cat(fragment_indice_list, axis = 1).flatten()
 
                 #get actions and normalized advantages for this minibatch
-                minibatch_act = flattened_act[shuffled_indices]
+                minibatch_act = torch.Tensor(act[shuffled_indices]).to(self.device)
                 minibatch_norm_adv = torch.Tensor(norm_adv[shuffled_indices]).to(self.device)
 
                 #initial states for this minibatch
                 minibatch_state = [state[0][shuffled_fragments].to(self.device), state[1][shuffled_fragments].to(self.device)]
-                continuous_means, discrete_output, value, _ = self(obs_fragmented[shuffled_fragments], minibatch_state, minibatch_act)
+                continuous_means, discrete_output, value, _ = self(obs_fragmented[shuffled_fragments], minibatch_state)
                 curr_logprob_pi, entropy = self.get_action_info(continuous_means, discrete_output, minibatch_act)
 
                 if self.dependent_movement_actions:
@@ -328,6 +293,7 @@ class lstm_agent(PBTAgent):
                 value_loss = torch.pow(value - torch.Tensor(value_targets[shuffled_indices]).to(self.device), 2)
 
                 entropy_loss = self.hyperparams['continuous_entropy_coeff'] * entropy[:,:3].mean() + self.hyperparams['discrete_entropy_coeff'] * entropy[:,3:].mean()
+                #inv_exp_entropy_loss = 1 / torch.exp((0.5 * entropy.sum(axis=1)).mean())
 
                 loss = -torch.min(surrogate_loss1, surrogate_loss2).mean() - entropy_loss + self.hyperparams['value_coeff'] * value_loss.mean()
 

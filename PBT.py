@@ -30,14 +30,15 @@ class PBTAgent(ABC, nn.Module):
     """
     # Copy module parameters
     self.load_state_dict(other_agent.state_dict())
-    
+    self.optimizer.load_state_dict(other_agent.optimizer.state_dict())
+
     # Copy hyperparameters
     hyperparams_to_update = {}
     other_agent_hyperparams = other_agent.get_hyperparams()
     for hyperparam_key in exploit_methods.keys():
       if hyperparam_key not in other_agent_hyperparams:
         raise ValueError("Other agent does contain the hyperparameter '{}'".format(hyperparam_key))
-      
+
       hyperparams_to_update[hyperparam_key] = exploit_methods[hyperparam_key](other_agent_hyperparams[hyperparam_key])
 
     self.update_hyperparams(hyperparams_to_update, evoke_update_event)
@@ -51,13 +52,13 @@ class PBTAgent(ABC, nn.Module):
           where the key is the name of the hyperparameter.
         evoke_update_event (bool) Whether or not to evoke the hyperparameter update event. When in doubt, keep it true.
     """
-    
+
     hyperparams_to_update = {}
     hyperparams = self.get_hyperparams()
     for hyperparam_key in explore_methods.keys():
       if hyperparam_key not in hyperparams:
         raise ValueError("Agent does not contain the hyperparameter '{}'".format(hyperparam_key))
-      
+
       hyperparams_to_update[hyperparam_key] = explore_methods[hyperparam_key](hyperparams[hyperparam_key])
 
     self.update_hyperparams(hyperparams_to_update, evoke_update_event)
@@ -66,14 +67,14 @@ def get_perturb_explore(perturbation_factor: float = 0.2) -> Callable[[float], f
   """Get a perturb exploration method using the given perturbation factor.
 
   Args:
-      perturbation_factor (float, optional): 1 plus or minus this factor is multiplied onto 
+      perturbation_factor (float, optional): 1 plus or minus this factor is multiplied onto
         the value. Defaults to 0.2.
 
   Returns:
       Callable[[float], float]: Returns the perturbation exploration function for this perturbation
         factor.
   """
-  
+
   def perturb_explore(value: float) -> float:
     if bool(pyrandom.getrandbits(1)):
       value *= 1 - perturbation_factor
@@ -104,7 +105,7 @@ def get_discrete_perturb_explore(perturbation_factor: float = 0.2, minimum: int 
 
   if minimum < 0:
     raise ValueError("The minimum value cannot be less than zero.")
-  
+
   if maximum != -1 and minimum >= maximum:
     raise ValueError("The minimum value cannot be greater than or equal to the maximum value.")
 
@@ -131,14 +132,14 @@ def get_list_explore(exploration_list: List[any]) -> Callable[[any], any]:
   Returns:
       Callable[[any], any]: Returns the exploration function for the provided list.
   """
-  
+
   def list_explore(value: any) -> any:
     element_index = exploration_list.index(value)
     if bool(pyrandom.getrandbits(1)):
       element_index = max(0, element_index - 1)
     else:
       element_index = min(len(exploration_list) - 1, element_index + 1)
-    
+
     return exploration_list[element_index]
 
   return list_explore
@@ -163,11 +164,11 @@ def pbt_update_all(agents_and_rewards: List[Tuple[PBTAgent, float, bool]], explo
         List[int]: Returns the list of indices of agents updated.
   """
   if exploit_portion < 0 or exploit_portion > 1:
-    raise ValueError("Invalid exploit portion. Must be between 0 and 1.") 
-  
+    raise ValueError("Invalid exploit portion. Must be between 0 and 1.")
+
   agents_and_rewards_sorted = np.flip(np.argsort([x[1] for x in agents_and_rewards]))
   num_to_exploit = int(ceil(len(agents_and_rewards) * exploit_portion))
-  
+
   exploited_agents = [agents_and_rewards[x][0] for x in agents_and_rewards_sorted[:num_to_exploit]]
   exploiter_agents_indices = [x for x in filter(lambda x: agents_and_rewards[x][2], agents_and_rewards_sorted[num_to_exploit:])]
 
@@ -180,7 +181,7 @@ def pbt_update_all(agents_and_rewards: List[Tuple[PBTAgent, float, bool]], explo
 
 def pbt_update_bottom(agents_and_rewards: List[Tuple[PBTAgent, float, bool]], exploit_methods: Dict[str, Callable[[any], any]], explore_methods: Dict[str, Callable[[any], any]], exploit_portion: float = 0.2, exploiter_portion: float = 0.2) -> None:
   """Update the PBT agents using the accumulated rewards as a judgement of fitness. The top agents
-  based on cumulative reward that are in the exploit portion are exploited 
+  based on cumulative reward that are in the exploit portion are exploited
 
   Args:
       agents_and_rewards (List[Tuple[PBTAgent, float, bool]]): A list of tuples containing the PBT agent to update,
@@ -201,7 +202,7 @@ def pbt_update_bottom(agents_and_rewards: List[Tuple[PBTAgent, float, bool]], ex
   agents_and_rewards_sorted = np.flip(np.argsort([x[1] for x in agents_and_rewards]))
   num_to_exploit = int(ceil(len(agents_and_rewards) * exploit_portion))
   num_exploiters = int(floor(len(agents_and_rewards) * exploiter_portion))
-  
+
   exploited_agents = [agents_and_rewards[x][0] for x in agents_and_rewards_sorted[:num_to_exploit]]
   exploiter_agents_indices = [x for x in filter(lambda x: agents_and_rewards[x][2], agents_and_rewards_sorted[-num_exploiters:])]
 
@@ -234,7 +235,7 @@ def update_hyperparameter_history(history_file_path: str, agents: List[Tuple[PBT
   else:
     with open(history_file_path, "r") as history_file:
       existing_history = json.load(history_file)
-  
+
   for index, (agent, needs_update) in enumerate(agents):
     if not needs_update:
       continue
