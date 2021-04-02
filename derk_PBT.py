@@ -26,7 +26,7 @@ random_configs = [{"slots": [random.choice(arm_weapons), random.choice(misc_weap
 env = DerkEnv(n_arenas = n_arenas, turbo_mode = True, reward_function = win_loss_reward_function, home_team = random_configs, away_team = random_configs)
 
 # PBT Parameters
-population_size = 40
+population_size = 20
 pbt_min_iterations = 10
 # Define which hyperparameters to exploit and how to copy the values.
 exploit_methods = {

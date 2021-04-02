@@ -40,7 +40,7 @@ class lstm_agent(PBTAgent):
             #minibatch size (will be rounded up to nearest multiple of lstm_fragment_length)
             "minibatch_size": 900,
             #how many times to loop over the entire batch of experience
-            "epochs_per_update": 4,
+            "epochs_per_update": 2,
             # how often to recompute hidden states and advantages. Expensive but allows more accurate training
             "recompute_every": 10000,
             # defines size of trust region, smaller generally means more stable but slower learning
@@ -69,6 +69,10 @@ class lstm_agent(PBTAgent):
         # by default this should be set to True
         self.dependent_movement_actions = True
 
+        # Combines the discrete heads of size 4 and 8 into one head of 32
+        # (Consisting of every combination of focus/weapon)
+        self.combine_discrete_moves = False
+
         #### ARCHITECTURE ####
 
         self.fc = nn.Sequential(nn.Linear(64, lstm_size), activation)
@@ -76,15 +80,20 @@ class lstm_agent(PBTAgent):
 
         self.value_head = nn.Linear(lstm_size, 1)
 
-        self.focus_action_head = nn.Sequential(activation, nn.Linear(lstm_size, 8))
-        #All other heads will take in one hot encoding of the focus action
-        self.ability_action_head = nn.Sequential(activation, nn.Linear(lstm_size + 8, 4))
-
         self.continuous_size = 3
         self.logstd = nn.Parameter(torch.Tensor([0, 0, -0.6931471805]))
         self.continuous_lower_bounds = torch.Tensor([-1, -1, 0]).to(self.device)
         self.continuous_upper_bounds = torch.Tensor([1, 1, 1]).to(self.device)
-        self.continuous_action_head = nn.Sequential(activation, nn.Linear(lstm_size + 8, self.continuous_size))
+
+        if self.combine_discrete_moves == True:
+            self.continuous_action_head = nn.Sequential(activation, nn.Linear(lstm_size + 32, self.continuous_size))
+            self.discrete_action_head = nn.Sequential(activation, nn.Linear(lstm_size, 32))
+
+        else:
+            self.continuous_action_head = nn.Sequential(activation, nn.Linear(lstm_size + 8, self.continuous_size))
+            self.focus_action_head = nn.Sequential(activation, nn.Linear(lstm_size, 8))
+            #All other heads will take in one hot encoding of the focus action
+            self.ability_action_head = nn.Sequential(activation, nn.Linear(lstm_size + 8, 4))
 
         self.optimizer = torch.optim.Adam(self.parameters(), lr = self.hyperparams["learning_rate"])
 
@@ -121,13 +130,16 @@ class lstm_agent(PBTAgent):
             for g in self.optimizer.param_groups:
                 g['lr'] = self.hyperparams["learning_rate"]
 
-
     def forward(self, obs, state, actions_taken = None):
+        # If obs is not a tensor make a tensor and move to device
+        if not isinstance(obs, torch.Tensor):
+            obs = torch.Tensor(obs).to(self.device)
+        # If obs does not include a time dim add it
         if len(obs.shape) < 3:
-            lstm_in = self.fc(torch.Tensor(obs).to(self.device)).unsqueeze(1)
+            lstm_in = self.fc(obs).unsqueeze(1)
         else:
-            lstm_in = self.fc(torch.Tensor(obs).to(self.device))
-
+            lstm_in = self.fc(obs)
+        # Use state if it was given otherwise use default all 0s state
         if state == None:
             lstm_out, state = self.lstm(lstm_in)
         else:
@@ -136,25 +148,35 @@ class lstm_agent(PBTAgent):
                 state[1] = state[1].unsqueeze(0)
             lstm_out, state = self.lstm(lstm_in, state)
 
-        features = lstm_out.reshape(-1, lstm_out.shape[2]) #flattens batch and seq len dimension together
+        features = lstm_out.flatten(end_dim = 1) #flattens batch and seq len dimension together
+        value = self.value_head(features) #calculate the value from the lstm features
 
-        value = self.value_head(features)
-        focus_logits = self.focus_action_head(features)
+        if self.combine_discrete_moves == True:
+            discrete_logits = self.discrete_action_head(features)
 
-        if actions_taken is None:
-            focus_action = self.sample_discrete(focus_logits)
+            if actions_taken is None:
+                discrete_combo_action = self.sample_discrete(discrete_logits)
+            else:
+                discrete_combo_action = (actions_taken[:,3].long() * 8) + actions_taken[:,4].long()
+
+            one_hot_discrete_action = nn.functional.one_hot(discrete_combo_action, 32)
+            features_discrete = torch.cat([features, one_hot_discrete_action], axis = 1)
+
         else:
-            focus_action = actions_taken[4].long()
+            focus_logits = self.focus_action_head(features)
 
-        one_hot_focus_action = torch.zeros((features.shape[0], 8)).to(self.device)
-        one_hot_focus_action[:, focus_action] = 1
+            if actions_taken is None:
+                focus_action = self.sample_discrete(focus_logits)
+            else:
+                focus_action = actions_taken[:,4].long()
 
-        features_focus = torch.cat([features, one_hot_focus_action], axis = 1)
+            one_hot_focus_action = nn.functional.one_hot(focus_action, 8)
+            features_discrete = torch.cat([features, one_hot_focus_action], axis = 1)
 
-        ability_logits = self.ability_action_head(features_focus)
-        discrete_logits = [ability_logits, focus_logits]
+            ability_logits = self.ability_action_head(features_discrete)
+            discrete_logits = [ability_logits, focus_logits]
 
-        continuous_vals = self.continuous_action_head(features_focus)
+        continuous_vals = self.continuous_action_head(features_discrete)
         #bound action 0 and 1 between -1 and 1, bound action 2 between 0 and 1
         continuous_vals[:,0:2] = torch.tanh(continuous_vals[:,0:2])
         continuous_vals[:,2] = torch.sigmoid(continuous_vals[:,2])
@@ -249,7 +271,7 @@ class lstm_agent(PBTAgent):
                 if minibatch_num % minibatches_before_recompute == 0:
                     _, _, frag_value, frag_state = self(obs[:, :self.hyperparams["lstm_fragment_length"], :],
                                                         None,
-                                                        act[:, :self.hyperparams["lstm_fragment_length"], :])
+                                                        act[:, :self.hyperparams["lstm_fragment_length"], :].flatten(end_dim = 1))
 
                     #initial zeroed out states
                     state = [frag_state[0].detach().cpu() * 0, frag_state[1].detach().cpu() * 0]
@@ -266,7 +288,7 @@ class lstm_agent(PBTAgent):
                         #get value and hidden states for next batch of fragments
                         _, _, frag_value, frag_state = self(obs[:, self.hyperparams["lstm_fragment_length"]*(i+1):self.hyperparams["lstm_fragment_length"]*(i+2), :],
                                                             frag_state,
-                                                            act[:, self.hyperparams["lstm_fragment_length"]*(i+1):self.hyperparams["lstm_fragment_length"]*(i+2), :])
+                                                            act[:, self.hyperparams["lstm_fragment_length"]*(i+1):self.hyperparams["lstm_fragment_length"]*(i+2), :].flatten(end_dim = 1))
 
                         #concatenate next fragment batch of values
                         value = torch.cat((value, frag_value.reshape(-1, self.hyperparams["lstm_fragment_length"]).unsqueeze(1)), axis = 1)
