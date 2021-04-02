@@ -16,7 +16,7 @@ class lstm_agent(PBTAgent):
     def __init__(self, lstm_size, device, activation = nn.Tanh(), hyperparams = {}):
         super().__init__()
         self.device = device
-
+        self.ELO=1000
         #### HYPERPARAMETERS ####
         default_hyperparams = {
             "learning_rate": 2e-3,
