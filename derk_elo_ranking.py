@@ -89,7 +89,8 @@ for iteration in range(ITERATIONS):
             otherIndex=-1
             while True: # Emulating a do-while loop for this
                 if len(available) > 0:
-                    randIndex=random.choice(available) # Generating the matchup value
+                    normal=np.absolute(np.random.normal(loc=0, scale=(len(available)-1)/3)) # within 3 SD of mean
+                    randIndex=available[int(np.floor(normal))] # Generating the matchup value
                 else: # Super convoluted edge case fix
                     for c in range(1, i+1): # Trace back the matchup list until we find a matchup that doesn't involve us 
                         for z in range(teams_per_member):
@@ -154,7 +155,6 @@ for iteration in range(ITERATIONS):
                 for i in range(league_size):
                     for j in np.arange(teams_per_member):
                         policy2=matchups[i][j]
-                        
                         policyScore=round(sum(reward_n[agent_mappings[i][j]])) # 0 is a loss, .5 is a tie, 1 is a win
 
                         policyProb=1.0/(1.0+pow(10, (old_elo[i]-old_elo[policy2])/400))
