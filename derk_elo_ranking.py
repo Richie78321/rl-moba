@@ -28,15 +28,21 @@ Intelligently assign the next matchup
 device = "cuda:0"
 ITERATIONS = 1000000
 root_dir="checkpoints/TEST_LEAGUE_AGENTS"
-league=[]
-k=30 #ELO weight parameter
+
+league = []
+member_names = []
+
+k = 30 #ELO weight parameter
+k_decay = 0.99
+
 count=0
 for root, dirs, files in os.walk(root_dir):
     for name in files: # Load in the agents stored at root_dir
         temp=lstm_agent(512, device)
         temp.load_state_dict(torch.load(os.path.join(root, name)))
         temp.id=count
-        temp.elo = 1000
+        temp.ELO = 1000
+        temp.name = name
         count+=1
         league.append(temp)
 
@@ -92,7 +98,7 @@ for iteration in range(ITERATIONS):
                     normal=np.absolute(np.random.normal(loc=0, scale=(len(available)-1)/3)) # within 3 SD of mean
                     randIndex=available[int(np.floor(normal))] # Generating the matchup value
                 else: # Super convoluted edge case fix
-                    for c in range(1, i+1): # Trace back the matchup list until we find a matchup that doesn't involve us 
+                    for c in range(1, i+1): # Trace back the matchup list until we find a matchup that doesn't involve us
                         for z in range(teams_per_member):
                             if matchups[i-c][z] != i: # If the matchup in question doesn't involvue us, stick the left out policy in the middle of it
                                 far_pos = matchups[matchups[i-c][z]].index(i-c) # Searching the far policy for where the matchup is stored, then replacing it with the left out policy
@@ -107,7 +113,7 @@ for iteration in range(ITERATIONS):
 
                 if found:
                     break
-                
+
                 newIndex=i+randIndex
 
                 if len(matchups[newIndex]) < teams_per_member: # If the selected policy has more matches to be made, we are fine
@@ -160,7 +166,9 @@ for iteration in range(ITERATIONS):
                         policyProb=1.0/(1.0+pow(10, (old_elo[i]-old_elo[policy2])/400))
 
                         league[i].ELO+=k*(policyScore-policyProb)
-                    print(str(i)+": "+str(league[i].ELO))
+                    print(league[i].name+": "+str(league[i].ELO))
                 break
+
+    k *= k_decay
 
 env.close()
