@@ -161,12 +161,13 @@ for iteration in range(ITERATIONS):
                 for i in range(league_size):
                     for j in np.arange(teams_per_member):
                         policy2=matchups[i][j]
-                        policyScore=round(sum(reward_n[agent_mappings[i][j]])) # 0 is a loss, .5 is a tie, 1 is a win
+                        score=round(sum(reward_n[agent_mappings[i][j]]), 1) # 0 is a loss, .5 is a tie, 1 is a win
+                        rating1=pow(10, old_elo[i]/400)
+                        rating2=pow(10, old_elo[policy2]/400)
 
-                        policyProb=1.0/(1.0+pow(10, (old_elo[i]-old_elo[policy2])/400))
-
-                        league[i].ELO+=k*(policyScore-policyProb)
-                    print(league[i].name+": "+str(league[i].ELO))
+                        expected=rating1/(rating1+rating2)
+                        league[i].ELO+=k*(score-expected)
+                    print(str(i)+": "+str(league[i].ELO))
                 break
 
     k *= k_decay
