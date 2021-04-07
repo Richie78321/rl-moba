@@ -96,8 +96,8 @@ for iteration in range(ITERATIONS):
             while True: # Emulating a do-while loop for this
                 if len(available) > 0:
                     normal=np.absolute(np.random.normal(loc=0, scale=(len(available)-1)/3)) # within 3 SD of mean
-                    if normal == len(available):
-                        normal-=1
+                    if normal >= len(available):
+                        normal = len(available)-1
                     randIndex=available[int(np.floor(normal))] # Generating the matchup value
                 else: # Super convoluted edge case fix
                     for c in range(1, i+1): # Trace back the matchup list until we find a matchup that doesn't involve us
