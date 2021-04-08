@@ -48,14 +48,16 @@ for root, dirs, files in os.walk(root_dir):
 
 random.shuffle(league)
 league_size = len(league) # Number of policies.  Must be even because we don't want byes or anything like that.
-teams_per_member=5 # Number of teams per policy.
-assert league_size%2 == 0, "Number of policies in the TEST_LEAGUE_AGENTS folder must be even"
+assert league_size % 2 == 0, "Number of policies in the TEST_LEAGUE_AGENTS folder must be even"
 
 arm_weapons = ["Talons", "BloodClaws", "Cleavers", "Cripplers", "Pistol", "Magnum", "Blaster"]
 misc_weapons = ["FrogLegs", "IronBubblegum", "HeliumBubblegum", "Shell", "Trombone"]
 tail_weapons = ["HealingGland", "VampireGland", "ParalyzingDart"]
 
+max_arena_number = 800
+teams_per_member = max_arena_number // (league_size // 2)
 n_arenas = (league_size*teams_per_member)//2
+
 random_configs = [{"slots": [random.choice(arm_weapons), random.choice(misc_weapons), random.choice(tail_weapons)]} for i in range(3 * n_arenas // 2)]
 env = DerkEnv(n_arenas = n_arenas, turbo_mode = True, reward_function = win_loss_reward_function, home_team = random_configs, away_team = random_configs)
 
@@ -169,7 +171,7 @@ for iteration in range(ITERATIONS):
 
                         expected=rating1/(rating1+rating2)
                         league[i].ELO+=k*(score-expected)
-                    print(str(i)+": "+str(league[i].ELO))
+                    print(league[i].name+": "+str(league[i].ELO))
                 break
 
     k *= k_decay

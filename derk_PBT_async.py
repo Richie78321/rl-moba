@@ -22,7 +22,7 @@ arm_weapons = ["Talons", "BloodClaws", "Cleavers", "Cripplers", "Pistol", "Magnu
 misc_weapons = ["FrogLegs", "IronBubblegum", "HeliumBubblegum", "Shell", "Trombone"]
 tail_weapons = ["HealingGland", "VampireGland", "ParalyzingDart"]
 
-n_arenas = 80
+n_arenas = 800
 
 # PBT Parameters
 population_size = 20
@@ -32,29 +32,40 @@ exploit_methods = {
     'learning_rate': lambda x: x,
     'discrete_entropy_coeff': lambda x: x,
     'continuous_entropy_coeff': lambda x: x,
+    'continuous_coeff': lambda x: x,
     'value_coeff': lambda x: x,
-    'fragments_per_batch': lambda x: x,
+    'minibatch_size': lambda x: x,
+    'lstm_fragment_length': lambda x: x,
 }
 # Define which hyperparameters to explore and how to.
+fragment_length_choices = [2,3,5,6,10,15,25,30]
 perturb_explore = get_perturb_explore()
 discrete_perturb_explore = get_discrete_perturb_explore()
+fragment_length_perturb_explore = get_list_explore(fragment_length_choices)
 
 explore_methods = {
     'learning_rate': perturb_explore,
     'discrete_entropy_coeff': perturb_explore,
     'continuous_entropy_coeff': perturb_explore,
+    'continuous_coeff': perturb_explore,
     'value_coeff': perturb_explore,
-    'fragments_per_batch': discrete_perturb_explore,
+    'minibatch_size': discrete_perturb_explore,
+    "lstm_fragment_length": fragment_length_perturb_explore,
 }
 
 # Initialize population with uniformly distributed hyperparameters.
 population = [lstm_agent(512, device, hyperparams={
-    'learning_rate': np.random.uniform(5e-5, 5e-2),
-    'discrete_entropy_coeff': np.random.uniform(0.001, 1.0),
-    'continuous_entropy_coeff': np.random.uniform(0.0001, 0.1),
-    'value_coeff': np.random.uniform(0.1, 1.5),
-    'fragments_per_batch': np.random.randint(low = 10, high = 200),
+    'learning_rate': 10 ** np.random.uniform(-6, -3),
+    'discrete_entropy_coeff': 10 ** np.random.uniform(-6, -4),
+    'continuous_entropy_coeff': 10 ** np.random.uniform(-6, -4),
+    'continuous_coeff': 10 ** np.random.uniform(0, 1.5),
+    'value_coeff': 10 ** np.random.uniform(-1, 0.3),
+    'minibatch_size': int(10 ** np.random.uniform(2, 3.5)),
+    "lstm_fragment_length": int(random.choice(fragment_length_choices)),
 }) for i in range(population_size)]
+
+print(population[0].get_hyperparams())
+
 # Record the last PBT update
 last_PBT_update = [0] * len(population)
 
@@ -86,7 +97,7 @@ async def run(env: DerkSession, app: DerkAppInstance):
         new_configs = [{"slots": [random.choice(arm_weapons), random.choice(misc_weapons), random.choice(tail_weapons)]} for i in range(3 * n_arenas // 2)]
         await app.update_away_team_config(new_configs)
         await app.update_home_team_config(new_configs)
-        
+
         observation = [[] for i in range(population_size)]
         action = [[] for i in range(population_size)]
         reward = [[] for i in range(population_size)]

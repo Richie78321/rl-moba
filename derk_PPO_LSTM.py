@@ -16,10 +16,11 @@ class lstm_agent(PBTAgent):
     def __init__(self, lstm_size, device, activation = nn.Tanh(), hyperparams = {}):
         super().__init__()
         self.device = device
-        self.ELO=1000
+
         #### HYPERPARAMETERS ####
         default_hyperparams = {
             "learning_rate": 2e-3,
+            "continuous_coefficient": 1,
             # discount factor, measure of how much you care about rewards in the future vs now
             # should probably be 1.0 for pure win-loss rewards
             "gamma": 1.0,
@@ -243,7 +244,9 @@ class lstm_agent(PBTAgent):
 
         continuous_means, discrete_output, _, _ = self(obs, None, flattened_act)
         original_log_prob_pi, entropy = self.get_action_info(continuous_means, discrete_output, flattened_act)
+
         original_log_prob_pi = original_log_prob_pi.detach()
+        original_log_prob_pi[:,:3] = original_log_prob_pi[:,:3] * self.hyperparams["continuous_coefficient"]
 
         if self.dependent_movement_actions:
             original_log_prob_pi[:,:2] *= (1 - flattened_act[:,2].unsqueeze(1))
@@ -320,15 +323,17 @@ class lstm_agent(PBTAgent):
                 #initial states for this minibatch
                 minibatch_state = [state[0][shuffled_fragments].to(self.device), state[1][shuffled_fragments].to(self.device)]
                 continuous_means, discrete_output, value, _ = self(obs_fragmented[shuffled_fragments], minibatch_state, minibatch_act)
-                curr_logprob_pi, entropy = self.get_action_info(continuous_means, discrete_output, minibatch_act)
+                curr_log_prob_pi, entropy = self.get_action_info(continuous_means, discrete_output, minibatch_act)
+
+                curr_log_prob_pi[:,:3] = curr_log_prob_pi[:,:3] * self.hyperparams["continuous_coefficient"]
 
                 if self.dependent_movement_actions:
-                    curr_logprob_pi[:,:2] *= (1 - minibatch_act[:,2].unsqueeze(1))
+                    curr_log_prob_pi[:,:2] *= (1 - minibatch_act[:,2].unsqueeze(1))
                     entropy[:,:2] *= (1 - minibatch_act[:,2].unsqueeze(1))
 
                 #PPO clipped policy loss
                 if self.clip_independently:
-                    log_ratio = curr_logprob_pi - original_log_prob_pi[shuffled_indices]
+                    log_ratio = curr_log_prob_pi - original_log_prob_pi[shuffled_indices]
 
                     #clip out massive ratios so they don't produce inf values
                     clipped_log_ratio = torch.clamp(log_ratio, -80, 80)
@@ -337,7 +342,7 @@ class lstm_agent(PBTAgent):
                     surrogate_loss1 = ratio * minibatch_norm_adv.unsqueeze(1)
                     surrogate_loss2 = torch.clamp(ratio, 1 - self.hyperparams['eps_clip'], 1 + self.hyperparams['eps_clip']) * minibatch_norm_adv.unsqueeze(1)
                 else:
-                    log_ratio = curr_logprob_pi.sum(axis=1) - original_log_prob_pi[shuffled_indices].sum(axis=1)
+                    log_ratio = curr_log_prob_pi.sum(axis=1) - original_log_prob_pi[shuffled_indices].sum(axis=1)
 
                     #clip out massive ratios so they don't produce inf values
                     clipped_log_ratio = torch.clamp(log_ratio, -80, 80)
