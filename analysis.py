@@ -12,7 +12,7 @@ import random
 from derk_PPO_LSTM import lstm_agent
 import matplotlib.pyplot as plt
 
-observation_keys = [
+OBS_KEYS = [
 "Hitpoints",
 "Ability0Ready",
 "FriendStatueDistance",
@@ -84,27 +84,19 @@ class analysis_agent(lstm_agent):
         self.device = device
 
     def analyze(self, obs, act):
-        act = torch.Tensor(act).to(self.device)
+        act = torch.Tensor(act).to(self.device).flatten(end_dim = 1) #flatten actions
         obs = torch.Tensor(obs).to(self.device)
         obs.requires_grad = True
 
         continuous_means, discrete_output, value, _ = self(obs, None, act)
 
-        print(value)
-
-        print(continuous_means)
-
         normal_dists = torch.distributions.Normal(continuous_means, self.logstd.exp())
         entropy = normal_dists.entropy()
-
-        print(self.logstd.exp())
 
         for i in range(len(discrete_output)):
             discrete_probs = nn.functional.log_softmax(discrete_output[i], dim=1).exp()
             discrete_dist = torch.distributions.Categorical(discrete_probs)
             entropy = torch.cat((entropy, discrete_dist.entropy().unsqueeze(1)), axis=1)
-
-        print(entropy.mean(axis=0))
 
         self.optimizer.zero_grad()
         loss = continuous_means.mean()
@@ -120,47 +112,118 @@ class analysis_agent(lstm_agent):
         plt.show()
         '''
 
-        #take absolute value of gradients
-        overall_mean_obs_grad = torch.abs(obs.grad).mean(axis=0)
-        overall_mean_obs_grad_percentages = (overall_mean_obs_grad / overall_mean_obs_grad.sum()) * 100
+        obs_grad = torch.abs(obs.grad)
+        totals = torch.sum(obs_grad, axis = 2)
 
-        print("\n")
-        for i, grad_value in enumerate(overall_mean_obs_grad_percentages.cpu().detach().numpy().tolist()):
-            print(observation_keys[i] + ' ' * (24 - len(observation_keys[i])), grad_value)
+        percent_obs_grad = (obs_grad / totals.unsqueeze(-1)) * 100
+        avg_percent_obs_grad = percent_obs_grad.mean(axis = 0).mean(axis = 0)
 
+        return avg_percent_obs_grad.cpu().detach().numpy().tolist()
+
+
+league_elos = {
+"10_14": 687.5065241967535,
+"0_0": 690.1545349062814,
+"2_5": 691.6362544955828,
+"6_12": 692.8014853809042,
+"18_4": 721.7629028625646,
+"26_10": 789.7207851153398,
+"34_12": 834.1350150679696,
+"44_6": 930.5111939685926,
+"54_0": 976.9440695740378,
+"66_9": 1022.773690493596,
+"260_10": 1060.4659643553143,
+"78_5": 1089.3302303386295,
+"92_15": 1116.8743949071977,
+"120_8": 1117.1544933814703,
+"136_11": 1131.1018636736944,
+"152_14": 1135.276912713643,
+"106_10": 1137.4919776144743,
+"202_18": 1148.3491319536827,
+"186_11": 1150.613770569797,
+"202_7": 1156.928116232478,
+"240_11": 1158.66611606952,
+"280_18": 1179.5742706704252,
+"168_19": 1190.0911819320697,
+"300_10": 1190.1351195259772}
 
 device = "cuda:0"
 ITERATIONS = 1000000
-agent = analysis_agent(512, device)
-agent.load_state_dict(torch.load("checkpoints/PPO-LSTM-PBT1617169679.9932897/300_18"))
+
+league = []
+league_analysis = []
+root_dir = "checkpoints/TEST_LEAGUE_AGENTS"
+for root, dirs, files in os.walk(root_dir):
+    for name in files: # Load in the agents stored at root_dir
+        temp = analysis_agent(512, device)
+        temp.load_state_dict(torch.load(os.path.join(root, name)))
+        temp.name = name
+        league.append(temp)
+
+teams_per_member = len(league)
 
 arm_weapons = ["Talons", "BloodClaws", "Cleavers", "Cripplers", "Pistol", "Magnum", "Blaster"]
 misc_weapons = ["FrogLegs", "IronBubblegum", "HeliumBubblegum", "Shell", "Trombone"]
 tail_weapons = ["HealingGland", "VampireGland", "ParalyzingDart"]
 
-n_arenas = 40
+max_arenas = 800
+teams_per_member = max_arenas // (len(league) // 2)
+n_arenas = (len(league)*teams_per_member) // 2
+
 random_configs = [{"slots": [random.choice(arm_weapons), random.choice(misc_weapons), random.choice(tail_weapons)]} for i in range(3 * n_arenas // 2)]
 env = DerkEnv(n_arenas = n_arenas, turbo_mode = True, home_team = random_configs, away_team = random_configs)
 
-for i in range(92378589027):
-    observations = []
-    actions = []
-    state = None
-    observation_n = env.reset()
-    while True:
-        action_n, state = agent.get_action(torch.Tensor(observation_n).to(device), state)
-        observation_n, reward_n, done_n, _ = env.step(action_n)
-        observations.append(observation_n)
-        actions.append(action_n)
+for i in range(1):
+    #randomize matchings between league members
+    scrambled_team_IDS = np.random.permutation(env.n_agents // 3)
+    league_agent_mappings = []
+    for i in range(len(league)):
+        member_matches = scrambled_team_IDS[teams_per_member*i:teams_per_member*(i+1)]
+        league_agent_mappings.append(np.concatenate([(member_matches * 3) + i for i in range(3)], axis = 0))
 
-        if all(done_n):
-          break
+    observation = [[] for i in range(len(league))]
+    action = [[] for i in range(len(league))]
+    reward = [[] for i in range(len(league))]
+    states = [None for i in range(len(league))]
+
+    observation_n = env.reset()
+    with torch.no_grad():
+        while True:
+            action_n = np.zeros((env.n_agents, 5))
+            for i in range(len(league)):
+                action_n[league_agent_mappings[i]], states[i] = league[i].get_action(observation_n[league_agent_mappings[i]], states[i])
+
+            #act in environment and observe the new obervation and reward (done tells you if episode is over)
+            observation_n, reward_n, done_n, _ = env.step(action_n)
+
+            #collect experience data to learn from
+            for i in range(len(league)):
+                observation[i].append(observation_n[league_agent_mappings[i]])
+                reward[i].append(reward_n[league_agent_mappings[i]])
+                action[i].append(action_n[league_agent_mappings[i]])
+
+            if all(done_n):
+              break
 
     # reshapes all collected data to [episode num, timestep]
-    observations = np.swapaxes(np.array(observations), 0, 1)
-    actions = np.swapaxes(np.array(actions), 0, 1)
-    #reshape the observation data into one big batch
-    observations = observations.reshape(-1, observations.shape[2])
-    actions = actions.reshape(-1, actions.shape[2])
+    for i in range(len(league)):
+        observation[i] = np.swapaxes(np.array(observation[i]), 0, 1)
+        reward[i] = np.swapaxes(np.array(reward[i]), 0, 1)
+        action[i] = np.swapaxes(np.array(action[i]), 0, 1)
 
-    agent.analyze(observations, actions)
+        league_analysis.append(league[i].analyze(observation[i], action[i]))
+
+for i, key in enumerate(OBS_KEYS):
+    x = np.zeros(len(league))
+    y = np.zeros(len(league))
+
+    for j in range(len(league)):
+        x[j] = league_elos[league[j].name]
+        y[j] = league_analysis[j][i]
+
+    plt.scatter(x, y)
+    plt.title(key + " Percent Gradient vs ELO")
+    plt.xlabel("ELO")
+    plt.ylabel("Percent of Gradient")
+    plt.savefig("analysis/" + key + ".png")
+    plt.close()
