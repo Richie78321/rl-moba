@@ -20,7 +20,6 @@ class lstm_agent(PBTAgent):
         #### HYPERPARAMETERS ####
         default_hyperparams = {
             "learning_rate": 2e-3,
-            "continuous_coefficient": 1,
             # discount factor, measure of how much you care about rewards in the future vs now
             # should probably be 1.0 for pure win-loss rewards
             "gamma": 1.0,
@@ -82,21 +81,23 @@ class lstm_agent(PBTAgent):
         self.value_head = nn.Linear(lstm_size, 1)
 
         self.continuous_size = 3
-        self.logstd = nn.Parameter(torch.Tensor([0, 0, -0.6931471805]))
         self.continuous_lower_bounds = torch.Tensor([-1, -1, 0]).to(self.device)
         self.continuous_upper_bounds = torch.Tensor([1, 1, 1]).to(self.device)
 
         if self.combine_discrete_moves == True:
-            self.continuous_action_head = nn.Sequential(activation, nn.Linear(lstm_size + 32, self.continuous_size))
+            self.continuous_mean_head = nn.Sequential(activation, nn.Linear(lstm_size + 32, self.continuous_size))
+            self.continuous_std_head = nn.Sequential(activation, nn.Linear(lstm_size + 32, self.continuous_size))
             self.discrete_action_head = nn.Sequential(activation, nn.Linear(lstm_size, 32))
 
         else:
-            self.continuous_action_head = nn.Sequential(activation, nn.Linear(lstm_size + 8, self.continuous_size))
+            self.continuous_mean_head = nn.Sequential(activation, nn.Linear(lstm_size + 8, self.continuous_size))
+            self.continuous_std_head = nn.Sequential(activation, nn.Linear(lstm_size + 8, self.continuous_size))
             self.focus_action_head = nn.Sequential(activation, nn.Linear(lstm_size, 8))
             #All other heads will take in one hot encoding of the focus action
             self.ability_action_head = nn.Sequential(activation, nn.Linear(lstm_size + 8, 4))
 
-        self.optimizer = torch.optim.Adam(self.parameters(), lr = self.hyperparams["learning_rate"])
+        #self.optimizer = torch.optim.Adam(self.parameters(), lr = self.hyperparams["learning_rate"])
+        self.optimizer = torch.optim.RMSprop(self.parameters(), lr = self.hyperparams["learning_rate"])
 
         self.to(self.device)
 
@@ -177,19 +178,24 @@ class lstm_agent(PBTAgent):
             ability_logits = self.ability_action_head(features_discrete)
             discrete_logits = [ability_logits, focus_logits]
 
-        continuous_vals = self.continuous_action_head(features_discrete)
+        continuous_means = self.continuous_mean_head(features_discrete)
+        continuous_stds = torch.sigmoid(self.continuous_std_head(features_discrete)) + 0.01
         #bound action 0 and 1 between -1 and 1, bound action 2 between 0 and 1
-        continuous_vals[:,0:2] = torch.tanh(continuous_vals[:,0:2])
-        continuous_vals[:,2] = torch.sigmoid(continuous_vals[:,2])
+        continuous_means[:,0:2] = torch.tanh(continuous_means[:,0:2])
+        continuous_means[:,2] = torch.sigmoid(continuous_means[:,2])
 
         if actions_taken is None:
-            ability_action = self.sample_discrete(ability_logits)
-            continuous_actions = self.sample_continuous(continuous_vals, self.logstd.exp())
-            action = torch.cat([continuous_actions, ability_action.reshape(-1,1), focus_action.reshape(-1,1)], axis = 1)
+            continuous_actions = self.sample_continuous(continuous_means, continuous_stds)
 
-            return continuous_vals, discrete_logits, value, state, action
+            if self.combine_discrete_moves == True:
+                pass
+            else:
+                ability_action = self.sample_discrete(ability_logits)
+                action = torch.cat([continuous_actions, ability_action.reshape(-1,1), focus_action.reshape(-1,1)], axis = 1)
 
-        return continuous_vals, discrete_logits, value, state
+            return continuous_means, discrete_logits, value, state, action
+
+        return continuous_means, continuous_stds, discrete_logits, value, state
 
     def sample_discrete(self, logits):
         probs = nn.functional.log_softmax(logits, dim=1).exp()
@@ -204,8 +210,8 @@ class lstm_agent(PBTAgent):
 
         return actions.cpu().numpy(), state
 
-    def get_action_info(self, continuous_means, discrete_output, actions_taken):
-        truncNorm = TruncatedNormal(self.device, continuous_means, self.logstd.exp(), self.continuous_lower_bounds, self.continuous_upper_bounds)
+    def get_action_info(self, continuous_means, countinuous_stds, discrete_output, actions_taken):
+        truncNorm = TruncatedNormal(self.device, continuous_means, countinuous_stds, self.continuous_lower_bounds, self.continuous_upper_bounds)
         log_probs = truncNorm.log_prob(actions_taken[:,:self.continuous_size])
         entropy = truncNorm._entropy
 
@@ -242,11 +248,9 @@ class lstm_agent(PBTAgent):
         fragments_per_batch = ceil(self.hyperparams["minibatch_size"] / self.hyperparams["lstm_fragment_length"])
         minibatches_before_recompute = ceil(self.hyperparams["recompute_every"] / self.hyperparams["minibatch_size"])
 
-        continuous_means, discrete_output, _, _ = self(obs, None, flattened_act)
-        original_log_prob_pi, entropy = self.get_action_info(continuous_means, discrete_output, flattened_act)
-
+        continuous_means, continuous_stds, discrete_output, _, _ = self(obs, None, flattened_act)
+        original_log_prob_pi, entropy = self.get_action_info(continuous_means, continuous_stds, discrete_output, flattened_act)
         original_log_prob_pi = original_log_prob_pi.detach()
-        original_log_prob_pi[:,:3] = original_log_prob_pi[:,:3] * self.hyperparams["continuous_coefficient"]
 
         if self.dependent_movement_actions:
             original_log_prob_pi[:,:2] *= (1 - flattened_act[:,2].unsqueeze(1))
@@ -259,7 +263,7 @@ class lstm_agent(PBTAgent):
         print("Action STDs:", continuous[0].item(), continuous[1].item(), continuous[2].item(), discrete_var1, discrete_var2)
 
         print("Policy Entropy: ", entropy.mean(axis=0).detach().cpu().numpy().tolist())
-        print("Policy Standev: ", self.logstd.exp().detach().cpu().numpy().tolist())
+        print("Policy Standev: ", continuous_stds.mean(axis=0).detach().cpu().numpy().tolist())
         #### DEBUGGING ####
 
         #break observation into fragments
@@ -269,10 +273,10 @@ class lstm_agent(PBTAgent):
             shuffled = torch.randperm(obs_fragmented.shape[0])
 
             print("\nTraining PPO epoch", epoch)
-            for minibatch_num in tqdm(range((obs_fragmented.shape[0]//fragments_per_batch) - 1)):
+            for minibatch_num in tqdm(range((obs_fragmented.shape[0] - 1) // fragments_per_batch)):
                 #recompute advantages and hidden states periodically to keep updates accurate
                 if minibatch_num % minibatches_before_recompute == 0:
-                    _, _, frag_value, frag_state = self(obs[:, :self.hyperparams["lstm_fragment_length"], :],
+                    _, _, _, frag_value, frag_state = self(obs[:, :self.hyperparams["lstm_fragment_length"], :],
                                                         None,
                                                         act[:, :self.hyperparams["lstm_fragment_length"], :].flatten(end_dim = 1))
 
@@ -289,7 +293,7 @@ class lstm_agent(PBTAgent):
                         state[1] = torch.cat((state[1], frag_state[1].detach().cpu()), axis = 0)
 
                         #get value and hidden states for next batch of fragments
-                        _, _, frag_value, frag_state = self(obs[:, self.hyperparams["lstm_fragment_length"]*(i+1):self.hyperparams["lstm_fragment_length"]*(i+2), :],
+                        _, _, _, frag_value, frag_state = self(obs[:, self.hyperparams["lstm_fragment_length"]*(i+1):self.hyperparams["lstm_fragment_length"]*(i+2), :],
                                                             frag_state,
                                                             act[:, self.hyperparams["lstm_fragment_length"]*(i+1):self.hyperparams["lstm_fragment_length"]*(i+2), :].flatten(end_dim = 1))
 
@@ -322,18 +326,16 @@ class lstm_agent(PBTAgent):
 
                 #initial states for this minibatch
                 minibatch_state = [state[0][shuffled_fragments].to(self.device), state[1][shuffled_fragments].to(self.device)]
-                continuous_means, discrete_output, value, _ = self(obs_fragmented[shuffled_fragments], minibatch_state, minibatch_act)
-                curr_log_prob_pi, entropy = self.get_action_info(continuous_means, discrete_output, minibatch_act)
-
-                curr_log_prob_pi[:,:3] = curr_log_prob_pi[:,:3] * self.hyperparams["continuous_coefficient"]
+                continuous_means, continuous_stds, discrete_output, value, _ = self(obs_fragmented[shuffled_fragments], minibatch_state, minibatch_act)
+                curr_logprob_pi, entropy = self.get_action_info(continuous_means, continuous_stds, discrete_output, minibatch_act)
 
                 if self.dependent_movement_actions:
-                    curr_log_prob_pi[:,:2] *= (1 - minibatch_act[:,2].unsqueeze(1))
+                    curr_logprob_pi[:,:2] *= (1 - minibatch_act[:,2].unsqueeze(1))
                     entropy[:,:2] *= (1 - minibatch_act[:,2].unsqueeze(1))
 
                 #PPO clipped policy loss
                 if self.clip_independently:
-                    log_ratio = curr_log_prob_pi - original_log_prob_pi[shuffled_indices]
+                    log_ratio = curr_logprob_pi - original_log_prob_pi[shuffled_indices]
 
                     #clip out massive ratios so they don't produce inf values
                     clipped_log_ratio = torch.clamp(log_ratio, -80, 80)
@@ -342,7 +344,7 @@ class lstm_agent(PBTAgent):
                     surrogate_loss1 = ratio * minibatch_norm_adv.unsqueeze(1)
                     surrogate_loss2 = torch.clamp(ratio, 1 - self.hyperparams['eps_clip'], 1 + self.hyperparams['eps_clip']) * minibatch_norm_adv.unsqueeze(1)
                 else:
-                    log_ratio = curr_log_prob_pi.sum(axis=1) - original_log_prob_pi[shuffled_indices].sum(axis=1)
+                    log_ratio = curr_logprob_pi.sum(axis=1) - original_log_prob_pi[shuffled_indices].sum(axis=1)
 
                     #clip out massive ratios so they don't produce inf values
                     clipped_log_ratio = torch.clamp(log_ratio, -80, 80)

@@ -32,7 +32,7 @@ exploit_methods = {
     'learning_rate': lambda x: x,
     'discrete_entropy_coeff': lambda x: x,
     'continuous_entropy_coeff': lambda x: x,
-    'continuous_coeff': lambda x: x,
+    #'continuous_coeff': lambda x: x,
     'value_coeff': lambda x: x,
     'minibatch_size': lambda x: x,
     'lstm_fragment_length': lambda x: x,
@@ -40,27 +40,27 @@ exploit_methods = {
 # Define which hyperparameters to explore and how to.
 fragment_length_choices = [2,3,5,6,10,15,25,30]
 perturb_explore = get_perturb_explore()
-discrete_perturb_explore = get_discrete_perturb_explore()
+minibatch_discrete_perturb_explore = get_discrete_perturb_explore(minimum = 250, maximum = 8000)
 fragment_length_perturb_explore = get_list_explore(fragment_length_choices)
 
 explore_methods = {
     'learning_rate': perturb_explore,
     'discrete_entropy_coeff': perturb_explore,
     'continuous_entropy_coeff': perturb_explore,
-    'continuous_coeff': perturb_explore,
+    #'continuous_coeff': perturb_explore,
     'value_coeff': perturb_explore,
-    'minibatch_size': discrete_perturb_explore,
+    'minibatch_size': minibatch_discrete_perturb_explore,
     "lstm_fragment_length": fragment_length_perturb_explore,
 }
 
 # Initialize population with uniformly distributed hyperparameters.
 population = [lstm_agent(512, device, hyperparams={
-    'learning_rate': 10 ** np.random.uniform(-6, -3),
+    'learning_rate': 10 ** np.random.uniform(-5, -3),
     'discrete_entropy_coeff': 10 ** np.random.uniform(-6, -4),
     'continuous_entropy_coeff': 10 ** np.random.uniform(-6, -4),
-    'continuous_coeff': 10 ** np.random.uniform(0, 1.5),
+    #'continuous_coeff': 10 ** np.random.uniform(0.8, 2),
     'value_coeff': 10 ** np.random.uniform(-1, 0.3),
-    'minibatch_size': int(10 ** np.random.uniform(2, 3.5)),
+    'minibatch_size': int(10 ** np.random.uniform(2.4, 3.6)),
     "lstm_fragment_length": int(random.choice(fragment_length_choices)),
 }) for i in range(population_size)]
 
