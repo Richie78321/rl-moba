@@ -144,7 +144,7 @@ def get_list_explore(exploration_list: List[any]) -> Callable[[any], any]:
 
   return list_explore
 
-def pbt_update_all(agents_and_rewards: List[Tuple[PBTAgent, float, bool]], exploit_methods: Dict[str, Callable[[any], any]], explore_methods: Dict[str, Callable[[any], any]], exploit_portion: float = 0.4) -> List[int]:
+def pbt_update_all(agents_and_rewards: List[Tuple[PBTAgent, float, bool]], exploit_methods: Dict[str, Callable[[any], any]], explore_methods: Dict[str, Callable[[any], any]], exploit_portion: float = 0.4) -> List[Tuple[int, int]]:
   """Update the PBT agents using the accumulated rewards as a judgement of fitness. The top agents
   based on cumulative reward that are in the exploit portion are exploited by the agents that are not
   in the exploit portion.
@@ -160,8 +160,8 @@ def pbt_update_all(agents_and_rewards: List[Tuple[PBTAgent, float, bool]], explo
       exploit_portion (float, optional): A value from 0.0 to 1.0 that determines what portion of
         fittest agents should be chosen from for exploitation. Defaults to 0.4.
 
-    Returns:
-        List[int]: Returns the list of indices of agents updated.
+    List[Tuple[int, int]]: Returns a list of tuples, with each tuple corresponding to an exploiter
+        agent index and exploited agent index.
   """
   if exploit_portion < 0 or exploit_portion > 1:
     raise ValueError("Invalid exploit portion. Must be between 0 and 1.")
@@ -169,17 +169,20 @@ def pbt_update_all(agents_and_rewards: List[Tuple[PBTAgent, float, bool]], explo
   agents_and_rewards_sorted = np.flip(np.argsort([x[1] for x in agents_and_rewards]))
   num_to_exploit = int(ceil(len(agents_and_rewards) * exploit_portion))
 
-  exploited_agents = [agents_and_rewards[x][0] for x in agents_and_rewards_sorted[:num_to_exploit]]
+  agents_to_exploit_indices = agents_and_rewards_sorted[:num_to_exploit]
   exploiter_agents_indices = [x for x in filter(lambda x: agents_and_rewards[x][2], agents_and_rewards_sorted[num_to_exploit:])]
+  exploited_agent_indices = random.choice(agents_to_exploit_indices, size=len(exploiter_agents_indices), replace=True)
 
-  for agent_index in exploiter_agents_indices:
+  exploiter_and_exploited_indices = list(zip(exploiter_agents_indices, exploited_agent_indices))
+
+  for exploiter_index, exploited_index in exploiter_and_exploited_indices:
     # Don't evoke update event because running explore directly after exploit.
-    agents_and_rewards[agent_index][0].exploit(random.choice(exploited_agents), exploit_methods, evoke_update_event=False)
-    agents_and_rewards[agent_index][0].explore(explore_methods)
+    agents_and_rewards[exploiter_index][0].exploit(agents_and_rewards[exploited_index][0], exploit_methods, evoke_update_event=False)
+    agents_and_rewards[exploiter_index][0].explore(explore_methods)
 
-  return exploiter_agents_indices
+  return exploiter_and_exploited_indices
 
-def pbt_update_bottom(agents_and_rewards: List[Tuple[PBTAgent, float, bool]], exploit_methods: Dict[str, Callable[[any], any]], explore_methods: Dict[str, Callable[[any], any]], exploit_portion: float = 0.2, exploiter_portion: float = 0.2) -> None:
+def pbt_update_bottom(agents_and_rewards: List[Tuple[PBTAgent, float, bool]], exploit_methods: Dict[str, Callable[[any], any]], explore_methods: Dict[str, Callable[[any], any]], exploit_portion: float = 0.2, exploiter_portion: float = 0.2) -> List[Tuple[int, int]]:
   """Update the PBT agents using the accumulated rewards as a judgement of fitness. The top agents
   based on cumulative reward that are in the exploit portion are exploited
 
@@ -195,6 +198,9 @@ def pbt_update_bottom(agents_and_rewards: List[Tuple[PBTAgent, float, bool]], ex
         fittest agents should be chosen from for exploitation. Defaults to 0.2.
       exploiter_portion (float, optional): Determines what portion of least fit agents should
         be chosen to exploit. Defaults to 0.2.
+  Returns:
+      List[Tuple[int, int]]: Returns a list of tuples, with each tuple corresponding to an exploiter
+        agent index and exploited agent index.
   """
   if exploit_portion < 0 or exploiter_portion < 0 or exploit_portion + exploiter_portion > 1:
     raise ValueError("Invalid exploit and exploiter portions. Each must be between 0 and 1, and their sum must not be greater than 1.")
@@ -203,15 +209,18 @@ def pbt_update_bottom(agents_and_rewards: List[Tuple[PBTAgent, float, bool]], ex
   num_to_exploit = int(ceil(len(agents_and_rewards) * exploit_portion))
   num_exploiters = int(floor(len(agents_and_rewards) * exploiter_portion))
 
-  exploited_agents = [agents_and_rewards[x][0] for x in agents_and_rewards_sorted[:num_to_exploit]]
+  agents_to_exploit_indices = agents_and_rewards_sorted[:num_to_exploit]
   exploiter_agents_indices = [x for x in filter(lambda x: agents_and_rewards[x][2], agents_and_rewards_sorted[-num_exploiters:])]
+  exploited_agent_indices = random.choice(agents_to_exploit_indices, size=len(exploiter_agents_indices), replace=True)
 
-  for agent_index in exploiter_agents_indices:
+  exploiter_and_exploited_indices = list(zip(exploiter_agents_indices, exploited_agent_indices))
+
+  for exploiter_index, exploited_index in exploiter_and_exploited_indices:
     # Don't evoke update event because running explore directly after exploit.
-    agents_and_rewards[agent_index][0].exploit(random.choice(exploited_agents), exploit_methods, evoke_update_event=False)
-    agents_and_rewards[agent_index][0].explore(explore_methods)
+    agents_and_rewards[exploiter_index][0].exploit(agents_and_rewards[exploited_index][0], exploit_methods, evoke_update_event=False)
+    agents_and_rewards[exploiter_index][0].explore(explore_methods)
 
-  return exploiter_agents_indices
+  return exploiter_and_exploited_indices
 
 def update_hyperparameter_history(history_file_path: str, agents: List[Tuple[PBTAgent, bool]], epoch_num: int) -> None:
   """Records the current hyperparameters of the agents into a file at the desired path.
