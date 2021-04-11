@@ -27,6 +27,7 @@ n_arenas = 800
 # PBT Parameters
 population_size = 20
 pbt_min_iterations = 10
+pbt_fitness_avg_exp = 0.2 # Lower means more focus on present -- 0 for no average
 # Define which hyperparameters to exploit and how to copy the values.
 exploit_methods = {
     'learning_rate': lambda x: x,
@@ -79,6 +80,8 @@ hyperparam_history_save_file = os.path.join(save_folder, 'hyperparam_history.jso
 update_hyperparameter_history(hyperparam_history_save_file, list(zip(population, [True] * len(population))), 0)
 
 async def run(env: DerkSession, app: DerkAppInstance):
+    population_PBT_fitness = np.zeros(len(population), dtype=float)
+
     teams_per_member = (env.n_agents // 3) // population_size
     for iteration in range(ITERATIONS):
         print("\n-----------------------------ITERATION " + str(iteration) + "-----------------------------")
@@ -134,20 +137,32 @@ async def run(env: DerkSession, app: DerkAppInstance):
             print("\nTraining Population Member", i)
             population[i].update(observation[i], action[i], reward[i])
 
+        # Update PBT reward running average
+        cumulative_rewards = np.array(reward).sum((1, 2))
+        print("Cumulative rewards per agent (this iteration):", cumulative_rewards)
+
+        # Add cumulative rewards to exponential moving average
+        population_PBT_fitness = (population_PBT_fitness * pbt_fitness_avg_exp) + (cumulative_rewards * (1 - pbt_fitness_avg_exp))
+        print("Moving average of cumulative rewards per agent:", population_PBT_fitness)
+
         agent_pbt_ready = [iteration - x >= pbt_min_iterations - 1 for x in last_PBT_update]
         if any(agent_pbt_ready):
-            cumulative_rewards = np.array(reward).sum((1, 2)).tolist()
-            print("Cumulative rewards per agent:", cumulative_rewards)
+            agents_and_rewards = list(zip(population, population_PBT_fitness.tolist(), agent_pbt_ready))
+            exploiter_and_exploited_indices = pbt_update_bottom(agents_and_rewards, exploit_methods, explore_methods)
 
-            agents_and_rewards = list(zip(population, cumulative_rewards, agent_pbt_ready))
-            updated_agents = pbt_update_bottom(agents_and_rewards, exploit_methods, explore_methods)
+            for exploiter_index, exploited_index in exploiter_and_exploited_indices:
+                last_PBT_update[exploiter_index] = iteration
 
-            for updated_agent_index in updated_agents:
-                last_PBT_update[updated_agent_index] = iteration
+                # Copy moving average from exploiter to exploited
+                population_PBT_fitness[exploiter_index] = population_PBT_fitness[exploited_index]
+                # Can also set the average to zero
+                # population_PBT_fitness[exploiter_index] = 0
 
-            print("Completed PBT update for {} agents".format(len(updated_agents)))
+            print("Completed PBT update for {} agents".format(len(exploiter_and_exploited_indices)))
 
-            update_hyperparameter_history(hyperparam_history_save_file, list(zip(population, [x in updated_agents for x in range(len(population))])), iteration)
+            if len(exploiter_and_exploited_indices) > 0:
+                updated_agents, _ = list(zip(*exploiter_and_exploited_indices))
+                update_hyperparameter_history(hyperparam_history_save_file, list(zip(population, [x in updated_agents for x in range(len(population))])), iteration)
 
 
 async def main():
