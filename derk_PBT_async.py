@@ -16,7 +16,6 @@ from reward_functions import *
 
 device = "cuda:0"
 ITERATIONS = 1000000
-agent = lstm_agent(512, device)
 
 arm_weapons = ["Talons", "BloodClaws", "Cleavers", "Cripplers", "Pistol", "Magnum", "Blaster"]
 misc_weapons = ["FrogLegs", "IronBubblegum", "HeliumBubblegum", "Shell", "Trombone"]
@@ -55,7 +54,7 @@ explore_methods = {
 }
 
 # Initialize population with uniformly distributed hyperparameters.
-population = [lstm_agent(512, device, hyperparams={
+population = [lstm_agent(1024, device, hyperparams={
     'learning_rate': 10 ** np.random.uniform(-5, -3),
     'discrete_entropy_coeff': 10 ** np.random.uniform(-6, -4),
     'continuous_entropy_coeff': 10 ** np.random.uniform(-6, -4),
@@ -94,6 +93,8 @@ async def run(env: DerkSession, app: DerkAppInstance):
             league_agent_mappings.append(np.concatenate([(member_matches * 3) + i for i in range(3)], axis = 0))
 
         if iteration in model_checkpoint_schedule:
+            curr_best = np.argmax(population_PBT_fitness)
+            torch.save(population[curr_best].state_dict(), save_folder + "/" + str(iteration) + "_best")
             for i in range(population_size):
                 torch.save(population[i].state_dict(), save_folder + "/" + str(iteration) + "_" + str(i))
 
@@ -143,7 +144,7 @@ async def run(env: DerkSession, app: DerkAppInstance):
 
         # Add cumulative rewards to exponential moving average
         population_PBT_fitness = (population_PBT_fitness * pbt_fitness_avg_exp) + (cumulative_rewards * (1 - pbt_fitness_avg_exp))
-        print("Moving average of cumulative rewards per agent:", population_PBT_fitness)
+        print("\nMoving average of cumulative rewards per agent:", population_PBT_fitness)
 
         agent_pbt_ready = [iteration - x >= pbt_min_iterations - 1 for x in last_PBT_update]
         if any(agent_pbt_ready):
