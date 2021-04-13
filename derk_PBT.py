@@ -127,7 +127,10 @@ for iteration in range(ITERATIONS):
     print("Training League With PPO")
     for i in range(population_size):
         print("\nTraining Population Member", i)
-        population[i].update(observation[i], action[i], reward[i])
+        try:
+            population[i].update(observation[i], action[i], reward[i])
+        except Exception as e:
+            print("\n\nError ocurred training population member number ", i, "!!!!\n", e, "\n\n")
 
     # Update PBT reward running average
     cumulative_rewards = np.array(reward).sum((1, 2))

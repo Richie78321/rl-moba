@@ -82,6 +82,8 @@ async def run(env: DerkSession, app: DerkAppInstance):
     population_PBT_fitness = np.zeros(len(population), dtype=float)
 
     teams_per_member = (env.n_agents // 3) // population_size
+    best = 0 #keeps track of the best performing model to save
+
     for iteration in range(ITERATIONS):
         print("\n-----------------------------ITERATION " + str(iteration) + "-----------------------------")
 

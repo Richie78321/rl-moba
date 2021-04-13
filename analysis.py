@@ -88,9 +88,9 @@ class analysis_agent(lstm_agent):
         obs = torch.Tensor(obs).to(self.device)
         obs.requires_grad = True
 
-        continuous_means, discrete_output, value, _ = self(obs, None, act)
+        continuous_means, continuous_stds, discrete_output, value, _ = self(obs, None, act)
 
-        normal_dists = torch.distributions.Normal(continuous_means, self.logstd.exp())
+        normal_dists = torch.distributions.Normal(continuous_means, continuous_stds)
         entropy = normal_dists.entropy()
 
         for i in range(len(discrete_output)):
@@ -122,43 +122,54 @@ class analysis_agent(lstm_agent):
 
 
 league_elos = {
-"10_14": 687.5065241967535,
-"0_0": 690.1545349062814,
-"2_5": 691.6362544955828,
-"6_12": 692.8014853809042,
-"18_4": 721.7629028625646,
-"26_10": 789.7207851153398,
-"34_12": 834.1350150679696,
-"44_6": 930.5111939685926,
-"54_0": 976.9440695740378,
-"66_9": 1022.773690493596,
-"260_10": 1060.4659643553143,
-"78_5": 1089.3302303386295,
-"92_15": 1116.8743949071977,
-"120_8": 1117.1544933814703,
-"136_11": 1131.1018636736944,
-"152_14": 1135.276912713643,
-"106_10": 1137.4919776144743,
-"202_18": 1148.3491319536827,
-"186_11": 1150.613770569797,
-"202_7": 1156.928116232478,
-"240_11": 1158.66611606952,
-"280_18": 1179.5742706704252,
-"168_19": 1190.0911819320697,
-"300_10": 1190.1351195259772}
+    "0_best": 671.9694965315853,
+    "2_best": 681.0078603819308,
+    "6_best": 679.0950624180409,
+    "18_best": 692.8526928057762,
+    "10_best": 706.7188043251175,
+    "26_best": 723.353629736221,
+    "34_best": 763.1220060621678,
+    "44_best": 831.8102654441604,
+    "54_best": 845.541286578307,
+    "66_best": 994.9128089854157,
+    "78_best": 998.9991291825171,
+    "92_best": 1027.9154992180763,
+    "106_best": 1041.5461901564818,
+    "168_best": 1060.8823078875698,
+    "152_best": 1078.2139891626362,
+    "512_best": 1080.392222486208,
+    "120_best": 1086.0525791932307,
+    "512_19": 1089.4788755749073,
+    "322_best": 1093.2457664500548,
+    "412_best": 1101.5239861942139,
+    "136_best": 1099.6611801870292,
+    "436_best": 1106.5015669631098,
+    "390_best": 1101.8799931086185,
+    "460_best": 1110.1297327335706,
+    "240_best": 1108.4797596004694,
+    "222_best": 1116.6452538332658,
+    "366_best": 1121.7923736279843,
+    "280_best": 1129.9202133491603,
+    "300_best": 1131.6277873681545,
+    "486_best": 1131.2987233903511,
+    "186_best": 1144.2066114425938,
+    "344_best": 1139.3215315445293,
+    "202_best": 1151.6069512738852,
+    "260_best": 1158.293862802676
+}
 
 device = "cuda:0"
 ITERATIONS = 1000000
 
 league = []
 league_analysis = []
-root_dir = "checkpoints/TEST_LEAGUE_AGENTS"
-for root, dirs, files in os.walk(root_dir):
-    for name in files: # Load in the agents stored at root_dir
-        temp = analysis_agent(512, device)
-        temp.load_state_dict(torch.load(os.path.join(root, name)))
-        temp.name = name
-        league.append(temp)
+root_dir = "checkpoints/PPO-LSTM-PBT-1024"
+
+for name in league_elos:
+    temp = analysis_agent(1024, device)
+    temp.load_state_dict(torch.load(os.path.join(root_dir, name)))
+    temp.name = name
+    league.append(temp)
 
 teams_per_member = len(league)
 
