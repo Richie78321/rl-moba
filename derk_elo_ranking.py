@@ -11,6 +11,7 @@ from tqdm import tqdm
 from torch_truncnorm.TruncatedNormal import TruncatedNormal
 from derk_PPO_LSTM import lstm_agent
 from reward_functions import *
+import json
 
 """
 Plan
@@ -27,7 +28,7 @@ Intelligently assign the next matchup
 
 device = "cuda:0"
 ITERATIONS = 1000000
-root_dir="checkpoints/TEST_LEAGUE_AGENTS"
+root_dir="checkpoints/PPO-LSTM-PBT-1024"
 
 league = []
 member_names = []
@@ -38,13 +39,14 @@ k_decay = 0.99
 count=0
 for root, dirs, files in os.walk(root_dir):
     for name in files: # Load in the agents stored at root_dir
-        temp=lstm_agent(512, device)
-        temp.load_state_dict(torch.load(os.path.join(root, name)))
-        temp.id=count
-        temp.ELO = 1000
-        temp.name = name
-        count+=1
-        league.append(temp)
+        if "best" in name:
+            temp=lstm_agent(1024, device)
+            temp.load_state_dict(torch.load(os.path.join(root, name)))
+            temp.id=count
+            temp.ELO = 1000
+            temp.name = name
+            count+=1
+            league.append(temp)
 
 random.shuffle(league)
 league_size = len(league) # Number of policies.  Must be even because we don't want byes or anything like that.
@@ -175,5 +177,10 @@ for iteration in range(ITERATIONS):
                 break
 
     k *= k_decay
+
+    #Save output to json file to be used in analysis
+    with open(root_dir + "/elo_rankings.json", 'w') as fp:
+        json.dump({league[i].name: league[i].ELO for i in range(league_size)}, fp)
+
 
 env.close()
